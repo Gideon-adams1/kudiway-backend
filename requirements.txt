@@ -3,6 +3,7 @@ gunicorn
 djangorestframework
 Pillow
 django-cors-headers
-django-q
+django-q2
+
 
 django-crontab
