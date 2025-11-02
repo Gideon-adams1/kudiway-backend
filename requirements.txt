@@ -7,3 +7,4 @@ django-q2
 
 
 django-crontab
+whitenoise
