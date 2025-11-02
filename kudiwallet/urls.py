@@ -1,0 +1,30 @@
+from django.urls import path
+from . import views, api  # ✅ include api for wallet detail endpoint
+
+urlpatterns = [
+    # 🪙 Main wallet info (used by the React Native app)
+    path("", api.WalletDetailView.as_view(), name="wallet-detail"),
+
+    # 💰 Core wallet actions
+    path("deposit/", views.deposit, name="deposit"),
+    path("withdraw/", views.withdraw_from_savings, name="withdraw"),
+    path("transfer-to-savings/", views.deposit_to_savings, name="deposit_to_savings"),
+    path("summary/", views.wallet_summary, name="wallet_summary"),
+    path("update_balance/", views.update_wallet_balance, name="update-wallet-balance"),
+    path("transactions/", views.transaction_history, name="transaction_history"),
+    path("credit-purchase/", views.credit_purchase_list, name="credit_purchase_list"),
+
+
+    # 💳 Credit features
+    path("credit-purchase/", api.CreditPurchaseView.as_view(), name="credit-purchase"),
+    path("borrow/", views.borrow_credit, name="borrow_credit"),
+    path("repay/", api.RepayCreditView.as_view(), name="repay_credit"),
+    path("credit-score/", views.get_credit_score, name="get_credit_score"),
+    path("request-limit-increase/", views.request_limit_increase, name="request_limit_increase"),
+
+    # 🧾 KYC routes
+    path("upload/", views.upload_kyc, name="upload_kyc"),
+    path("status/", views.get_kyc_status, name="get_kyc_status"),
+    path("approve_kyc/<int:kyc_id>/", views.approve_kyc_admin, name="approve_kyc_admin"),
+    path("reject_kyc/<int:kyc_id>/", views.reject_kyc_admin, name="reject_kyc_admin"),
+]

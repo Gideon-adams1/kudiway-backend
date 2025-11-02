@@ -1,0 +1,12 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('register/', views.register_user, name='register'),
+    path('login/', views.login_user, name='login'),
+    path('logout/', views.logout_user, name='logout'),
+    path('current-user/', views.get_current_user, name='get_current_user'),
+    path('update-profile/', views.update_profile, name='update_profile'),
+    path("profile/", views.get_profile, name="get_profile"),
+    path("points/", views.get_kudi_points, name="get_kudi_points"),  # ✅ new
+]
