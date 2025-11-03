@@ -32,12 +32,15 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'django_crontab',
-    'django_q',
+    'django_q2',
 
     # Local apps
     'users',
     'kudiwallet',
     'orders',
+    'cloudinary',
+    'cloudinary_storage',
+
 ]
 
 # -------------------------------------------------
