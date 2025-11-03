@@ -32,7 +32,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'django_crontab',
-    'django_q2',
+    'django_q',
 
     # Local apps
     'users',
