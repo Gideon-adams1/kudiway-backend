@@ -179,7 +179,9 @@ class OrderItem(models.Model):
             self.product_name_snapshot = getattr(self.product, "name", str(self.product))
         if not self.product_image_snapshot and self.product:
             img = getattr(self.product, "image", "")
-            self.product_image_snapshot = str(img or "")
+            if img:
+             self.product_image_snapshot = str(img.url).replace("http://", "https://")
+
         super().save(*args, **kwargs)
 
     def __str__(self):
