@@ -9,6 +9,13 @@ import os
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+from pathlib import Path
+from datetime import timedelta
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # ✅ this loads the .env file
+
 
 # -------------------------------------------------
 # Basic configuration

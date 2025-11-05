@@ -3,10 +3,11 @@ from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 import uuid
+from cloudinary.models import CloudinaryField  # ✅ import CloudinaryField
 
 
 # ============================================================
-# 🛍️ PRODUCT MODEL (Supports real image uploads)
+# 🛍️ PRODUCT MODEL (Cloudinary image uploads)
 # ============================================================
 class Product(models.Model):
     CATEGORY_CHOICES = [
@@ -26,12 +27,12 @@ class Product(models.Model):
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
-    # ✅ Use ImageField for real uploads
-    image = models.ImageField(upload_to="products/", null=True, blank=True)
-    image2 = models.ImageField(upload_to="products/", null=True, blank=True)
-    image3 = models.ImageField(upload_to="products/", null=True, blank=True)
-    image4 = models.ImageField(upload_to="products/", null=True, blank=True)
-    image5 = models.ImageField(upload_to="products/", null=True, blank=True)
+    # ✅ Store images directly in Cloudinary
+    image = CloudinaryField("image", blank=True, null=True)
+    image2 = CloudinaryField("image", blank=True, null=True)
+    image3 = CloudinaryField("image", blank=True, null=True)
+    image4 = CloudinaryField("image", blank=True, null=True)
+    image5 = CloudinaryField("image", blank=True, null=True)
 
     vendor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
