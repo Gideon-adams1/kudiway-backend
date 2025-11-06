@@ -141,9 +141,9 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # Cloudinary Media Files (replaces local media)
 # -------------------------------------------------
 CLOUDINARY_STORAGE = {
-    'CLOUD_NAME': os.getenv('CLOUDINARY_CLOUD_NAME'),
-    'API_KEY': os.getenv('CLOUDINARY_API_KEY'),
-    'API_SECRET': os.getenv('CLOUDINARY_API_SECRET'),
+    'CLOUD_NAME': os.getenv('dmpymbirt'),
+    'API_KEY': os.getenv('356444953374757'),
+    'API_SECRET': os.getenv('a2Yvr9WNswF28a9K46HUeDV6DTk'),
 }
 DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
 
