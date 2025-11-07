@@ -3,7 +3,7 @@ from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 import uuid
-from cloudinary.models import CloudinaryField  # ✅ import CloudinaryField
+from cloudinary.models import CloudinaryField
 
 
 # ============================================================
@@ -27,7 +27,7 @@ class Product(models.Model):
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
-    # ✅ Store images directly in Cloudinary
+    # ✅ Store all images directly in Cloudinary
     image = CloudinaryField("image", blank=True, null=True)
     image2 = CloudinaryField("image", blank=True, null=True)
     image3 = CloudinaryField("image", blank=True, null=True)
@@ -50,6 +50,29 @@ class Product(models.Model):
         if self.old_price and self.old_price > 0:
             return round(((self.old_price - self.price) / self.old_price) * 100, 1)
         return 0
+
+    def save(self, *args, **kwargs):
+        """
+        ✅ Always ensure Cloudinary URLs are saved as full HTTPS links.
+        This guarantees images persist across restarts and rebuilds.
+        """
+        for field_name in ["image", "image2", "image3", "image4", "image5"]:
+            field = getattr(self, field_name)
+            if field:
+                try:
+                    url = str(field.url).replace("http://", "https://")
+                    setattr(self, field_name, url)
+                except Exception:
+                    # Already stored as string or missing .url attr
+                    if isinstance(field, str) and field.startswith("http"):
+                        setattr(self, field_name, field.replace("http://", "https://"))
+                    elif isinstance(field, str) and len(field) < 100 and "/" not in field:
+                        setattr(
+                            self,
+                            field_name,
+                            f"https://res.cloudinary.com/dmpymbirt/image/upload/{field}.jpg",
+                        )
+        super().save(*args, **kwargs)
 
 
 # ============================================================
@@ -175,12 +198,24 @@ class OrderItem(models.Model):
         return self.price * self.quantity
 
     def save(self, *args, **kwargs):
+        """
+        ✅ Always preserve image & name snapshots as full HTTPS URLs.
+        Ensures order history keeps showing correct product visuals.
+        """
         if not self.product_name_snapshot and self.product:
             self.product_name_snapshot = getattr(self.product, "name", str(self.product))
+
         if not self.product_image_snapshot and self.product:
             img = getattr(self.product, "image", "")
             if img:
-             self.product_image_snapshot = str(img.url).replace("http://", "https://")
+                try:
+                    self.product_image_snapshot = str(img.url).replace("http://", "https://")
+                except Exception:
+                    if isinstance(img, str):
+                        if img.startswith("http"):
+                            self.product_image_snapshot = img.replace("http://", "https://")
+                        elif len(img) < 100 and "/" not in img:
+                            self.product_image_snapshot = f"https://res.cloudinary.com/dmpymbirt/image/upload/{img}.jpg"
 
         super().save(*args, **kwargs)
 
