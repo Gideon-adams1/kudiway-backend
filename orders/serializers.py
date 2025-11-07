@@ -2,17 +2,27 @@ from rest_framework import serializers
 from .models import Order, OrderItem, Product, PartnerListing
 
 # ============================================================
-# 🌍 Helper: Build absolute URL
+# 🌍 Helper: Build absolute or Cloudinary URL
 # ============================================================
-def abs_url(request, image_field):
-    """Return full absolute URL for media file if exists"""
+def build_full_url(request, image_field):
+    """Return a valid absolute URL (handles Cloudinary public_id or full URL)"""
     if not image_field:
         return None
+
     try:
-        url = image_field.url
+        url = image_field.url  # works for Django FileFields
     except Exception:
-        # If it's already a string (snapshot or path)
-        url = str(image_field)
+        url = str(image_field)  # fallback if it's stored as plain text
+
+    # ✅ If it's already a full URL
+    if url.startswith("http"):
+        return url.replace("http://", "https://")
+
+    # ✅ If it's a Cloudinary public_id (no slashes, short string)
+    if len(url) < 100 and "/" not in url:
+        return f"https://res.cloudinary.com/dmpymbirt/image/upload/{url}.jpg"
+
+    # ✅ Otherwise build absolute URI for local files
     return request.build_absolute_uri(url) if request else url
 
 
@@ -23,7 +33,6 @@ class ProductSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.username", read_only=True)
     oldPrice = serializers.DecimalField(source="old_price", max_digits=10, decimal_places=2, read_only=True)
 
-    # ✅ Convert image paths to absolute URLs
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
@@ -51,26 +60,25 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_image(self, obj):
-        return abs_url(self.context.get("request"), obj.image)
+        return build_full_url(self.context.get("request"), obj.image)
 
     def get_image2(self, obj):
-        return abs_url(self.context.get("request"), obj.image2)
+        return build_full_url(self.context.get("request"), obj.image2)
 
     def get_image3(self, obj):
-        return abs_url(self.context.get("request"), obj.image3)
+        return build_full_url(self.context.get("request"), obj.image3)
 
     def get_image4(self, obj):
-        return abs_url(self.context.get("request"), obj.image4)
+        return build_full_url(self.context.get("request"), obj.image4)
 
     def get_image5(self, obj):
-        return abs_url(self.context.get("request"), obj.image5)
+        return build_full_url(self.context.get("request"), obj.image5)
 
 
 # ============================================================
 # 🤝 PARTNER LISTING SERIALIZER
 # ============================================================
 class PartnerListingSerializer(serializers.ModelSerializer):
-    # ✅ Flatten product fields
     name = serializers.CharField(source="product.name", read_only=True)
     description = serializers.CharField(source="product.description", read_only=True)
     category = serializers.CharField(source="product.category", read_only=True)
@@ -80,10 +88,8 @@ class PartnerListingSerializer(serializers.ModelSerializer):
     partner = serializers.CharField(source="partner.username", read_only=True)
     is_resale = serializers.SerializerMethodField()
 
-    # ✅ Full nested raw product data (so frontend can open details)
     product = serializers.SerializerMethodField()
 
-    # ✅ Flatten product images with absolute URLs
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
@@ -116,23 +122,22 @@ class PartnerListingSerializer(serializers.ModelSerializer):
         return True
 
     def get_product(self, obj):
-        """Attach raw product details for nested use in frontend"""
         return ProductSerializer(obj.product, context=self.context).data if obj.product else None
 
     def get_image(self, obj):
-        return abs_url(self.context.get("request"), getattr(obj.product, "image", None))
+        return build_full_url(self.context.get("request"), getattr(obj.product, "image", None))
 
     def get_image2(self, obj):
-        return abs_url(self.context.get("request"), getattr(obj.product, "image2", None))
+        return build_full_url(self.context.get("request"), getattr(obj.product, "image2", None))
 
     def get_image3(self, obj):
-        return abs_url(self.context.get("request"), getattr(obj.product, "image3", None))
+        return build_full_url(self.context.get("request"), getattr(obj.product, "image3", None))
 
     def get_image4(self, obj):
-        return abs_url(self.context.get("request"), getattr(obj.product, "image4", None))
+        return build_full_url(self.context.get("request"), getattr(obj.product, "image4", None))
 
     def get_image5(self, obj):
-        return abs_url(self.context.get("request"), getattr(obj.product, "image5", None))
+        return build_full_url(self.context.get("request"), getattr(obj.product, "image5", None))
 
 
 # ============================================================
@@ -148,10 +153,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = ["id", "product_name", "image", "price", "quantity", "line_total"]
 
     def get_image(self, obj):
-        """Ensure correct image path for snapshot fields"""
         request = self.context.get("request")
         if obj.product_image_snapshot:
-            return abs_url(request, obj.product_image_snapshot)
+            return build_full_url(request, obj.product_image_snapshot)
         return None
 
     def get_line_total(self, obj):
@@ -159,7 +163,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 
 # ============================================================
-# 💳 ORDER SERIALIZER (checkout + history)
+# 💳 ORDER SERIALIZER
 # ============================================================
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
