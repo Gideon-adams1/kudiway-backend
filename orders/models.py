@@ -27,7 +27,7 @@ class Product(models.Model):
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
-    # ✅ Store all images in Cloudinary
+    # ✅ Cloudinary images
     image = CloudinaryField("image", blank=True, null=True)
     image2 = CloudinaryField("image", blank=True, null=True)
     image3 = CloudinaryField("image", blank=True, null=True)
@@ -52,10 +52,7 @@ class Product(models.Model):
         return 0
 
     def save(self, *args, **kwargs):
-        """
-        ✅ Always ensure Cloudinary URLs are stored as HTTPS links.
-        Keeps image paths persistent even after restarts.
-        """
+        """Ensure all Cloudinary URLs are HTTPS."""
         for field_name in ["image", "image2", "image3", "image4", "image5"]:
             field = getattr(self, field_name)
             if field:
@@ -75,14 +72,12 @@ class Product(models.Model):
 
 
 # ============================================================
-# 🤝 PARTNER LISTING MODEL (Resell & Earn)
+# 🤝 PARTNER LISTING MODEL (Affiliate Resale)
 # ============================================================
 class PartnerListing(models.Model):
     """
-    Represents a product that a verified partner has listed for resale.
-    - Base product comes from Product
-    - Partner adds a profit markup
-    - Profit later converted into points after purchase
+    Verified partner resells a Kudiway product with a profit markup.
+    Buyer only sees the final (base + markup) price via the referral link.
     """
 
     partner = models.ForeignKey(
@@ -95,25 +90,38 @@ class PartnerListing(models.Model):
         on_delete=models.CASCADE,
         related_name="partner_products",
     )
+
     markup = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    resale_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True)
+    final_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True)
+    referral_code = models.CharField(max_length=50, unique=True, blank=True)
+    referral_url = models.URLField(blank=True, null=True)
+    clicks = models.PositiveIntegerField(default=0)
+    sales_count = models.PositiveIntegerField(default=0)
     slug = models.SlugField(unique=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        """Auto-generate resale price & unique slug."""
-        if not self.resale_price:
-            self.resale_price = (self.product.price or 0) + self.markup
+        """Generate final price, referral link, and unique slug."""
+        # Compute final resale price
+        self.final_price = (self.product.price or Decimal("0.00")) + (self.markup or Decimal("0.00"))
 
+        # Generate unique slug and referral code
         if not self.slug:
             base_slug = slugify(f"{self.partner.username}-{self.product.name}")
             unique_id = uuid.uuid4().hex[:6]
             self.slug = f"{base_slug}-{unique_id}"
 
+        if not self.referral_code:
+            self.referral_code = uuid.uuid4().hex[:8]
+
+        # Construct referral URL
+        base_domain = "https://kudiwayapp.com"  # ✅ replace with your real domain
+        self.referral_url = f"{base_domain}/r/{self.referral_code}"
+
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.partner} resells {self.product.name} (+₵{self.markup})"
+        return f"{self.partner.username} resells {self.product.name} (+₵{self.markup})"
 
 
 # ============================================================
@@ -161,7 +169,6 @@ class Order(models.Model):
     def __str__(self):
         return f"Order #{self.id} — {self.user} — ₵{self.total_amount}"
 
-    # 🔁 Recompute totals before saving
     def recompute_totals(self):
         subtotal = Decimal("0.00")
         for item in self.items.all():
@@ -171,20 +178,18 @@ class Order(models.Model):
         return self.total_amount
 
     def save(self, *args, **kwargs):
-        """Recalculate totals and award partner points on completed orders."""
+        """Recalculate totals & reward partner points after payment."""
         if self.pk:
             self.recompute_totals()
 
-            # 🪙 Reward reseller points automatically if order is marked as PAID or DELIVERED
             if self.status in [self.Status.PAID, self.Status.DELIVERED]:
                 for item in self.items.all():
                     if item.partner and hasattr(item.partner, "points"):
                         base_price = getattr(item.product, "price", Decimal("0.00"))
                         profit = max(Decimal("0.00"), item.price - base_price)
                         if profit > 0:
-                            points = int(profit * 10)  # 10 pts = ₵1
-                            item.partner.points.add_points(points)
-
+                            pts = int(profit * 10)  # 10 pts = ₵1
+                            item.partner.points.add_points(pts)
         super().save(*args, **kwargs)
 
 
@@ -210,19 +215,16 @@ class OrderItem(models.Model):
         null=True,
         blank=True,
         related_name="partner_order_items",
-        help_text="If sold through a partner, links reseller to sale.",
+        help_text="If the item was sold through a partner, links reseller to sale.",
     )
 
     def line_total(self):
         return self.price * self.quantity
 
     def save(self, *args, **kwargs):
-        """
-        ✅ Preserve snapshots so historical orders retain correct visuals even if products change.
-        """
+        """Preserve product snapshots for history."""
         if not self.product_name_snapshot and self.product:
             self.product_name_snapshot = getattr(self.product, "name", str(self.product))
-
         if not self.product_image_snapshot and self.product:
             img = getattr(self.product, "image", "")
             if img:
@@ -233,8 +235,9 @@ class OrderItem(models.Model):
                         if img.startswith("http"):
                             self.product_image_snapshot = img.replace("http://", "https://")
                         elif len(img) < 100 and "/" not in img:
-                            self.product_image_snapshot = f"https://res.cloudinary.com/dmpymbirt/image/upload/{img}.jpg"
-
+                            self.product_image_snapshot = (
+                                f"https://res.cloudinary.com/dmpymbirt/image/upload/{img}.jpg"
+                            )
         super().save(*args, **kwargs)
 
     def __str__(self):

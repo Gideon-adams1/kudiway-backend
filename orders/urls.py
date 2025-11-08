@@ -29,4 +29,10 @@ urlpatterns = [
 
     # 🔹 Get all resale listings for the current verified partner
     path("my-listings/", views.get_partner_listings, name="get_partner_listings"),
+
+    # ============================================================
+    # 🔗 AFFILIATE / REFERRAL LINK
+    # ============================================================
+    # 🔹 New endpoint — used when someone opens a referral link (e.g., /orders/referral/abc123/)
+    path("referral/<str:ref_code>/", views.get_referral_product, name="get_referral_product"),
 ]
