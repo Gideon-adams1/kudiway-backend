@@ -14,9 +14,10 @@ from .serializers import OrderSerializer, ProductSerializer, PartnerListingSeria
 
 
 # ============================================================
-# 💵 Helper: Log Transactions
+# 💵 HELPER — TRANSACTION LOGGER
 # ============================================================
 def log_transaction(user, transaction_type, amount, description=""):
+    """Creates a transaction log entry."""
     try:
         Transaction.objects.create(
             user=user,
@@ -24,55 +25,54 @@ def log_transaction(user, transaction_type, amount, description=""):
             amount=Decimal(amount),
             description=description,
         )
-        print(f"✅ Transaction logged: {transaction_type} ₵{amount} for {user.username}")
+        print(f"✅ Transaction logged: {transaction_type} ₵{amount} ({user.username})")
     except Exception as e:
         print("⚠️ Transaction log failed:", e)
 
 
 # ============================================================
-# 🏬 STORE: List all products & partner listings
+# 🏬 STORE — LIST ALL PRODUCTS & PARTNER LISTINGS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def list_products(request):
-    """List all vendor products and partner listings"""
-    print("📦 DEBUG: Fetching all products + partner listings")
+    """
+    Lists all active vendor products + partner resale listings.
+    Partner resale products are flagged with is_resale=True.
+    """
     try:
-        products = Product.objects.all().order_by("-created_at")
-        listings = PartnerListing.objects.select_related("product", "partner").order_by("-created_at")
+        base_products = Product.objects.all().order_by("-created_at")
+        partner_listings = PartnerListing.objects.select_related("product", "partner").order_by("-created_at")
 
-        product_data = ProductSerializer(products, many=True, context={"request": request}).data
-        listing_data = PartnerListingSerializer(listings, many=True, context={"request": request}).data
+        base_serialized = ProductSerializer(base_products, many=True, context={"request": request}).data
+        resale_serialized = PartnerListingSerializer(partner_listings, many=True, context={"request": request}).data
 
-        print(f"✅ Products: {len(products)}, Partner Listings: {len(listings)}")
-        return Response(product_data + listing_data, status=status.HTTP_200_OK)
+        combined = base_serialized + resale_serialized
+        print(f"✅ Store fetch complete: {len(base_products)} products + {len(partner_listings)} resales")
+        return Response(combined, status=status.HTTP_200_OK)
 
     except Exception as e:
-        print("❌ ERROR in list_products:", e)
+        print("❌ ERROR fetching store products:", e)
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ============================================================
-# 📦 GET SINGLE PRODUCT (by vendor or partner)
+# 📦 GET SINGLE PRODUCT OR PARTNER LISTING
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def get_product(request, pk):
-    """Retrieve single product or partner listing by ID"""
-    print(f"🔍 DEBUG: Fetching product by ID = {pk}")
+    """Fetch single product or partner resale listing by ID."""
     try:
         product = Product.objects.get(pk=pk)
-        print(f"✅ Found product: {product.name}")
         serializer = ProductSerializer(product, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
     except Product.DoesNotExist:
         try:
             listing = PartnerListing.objects.get(pk=pk)
-            print(f"✅ Found partner listing for product: {listing.product.name}")
             serializer = PartnerListingSerializer(listing, context={"request": request})
             return Response(serializer.data, status=status.HTTP_200_OK)
         except PartnerListing.DoesNotExist:
-            print("❌ Product not found in both tables")
             return Response({"error": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         print("❌ ERROR in get_product:", e)
@@ -80,14 +80,13 @@ def get_product(request, pk):
 
 
 # ============================================================
-# 🧾 CREATE ORDER
+# 🧾 CREATE ORDER (Handles WALLET + CREDIT payments)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_order(request):
     user = request.user
-    print(f"🧾 DEBUG: create_order() called by {user.username}")
-    print("📨 Incoming data:", request.data)
+    print(f"🧾 Creating order for {user.username}")
 
     wallet, _ = Wallet.objects.get_or_create(user=user)
     points_wallet, _ = KudiPoints.objects.get_or_create(user=user)
@@ -96,29 +95,27 @@ def create_order(request):
     payment_method = data.get("payment_method", "wallet")
 
     if not items:
-        print("⛔ No items in order")
-        return Response({"error": "No items in order."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "No items provided."}, status=400)
 
     total_amount = sum(
-        Decimal(str(item.get("price", 0))) * int(item.get("qty", 1)) for item in items
+        Decimal(str(i.get("price", 0))) * int(i.get("qty", 1)) for i in items
     )
-    print(f"💰 Total amount: ₵{total_amount}")
+    print(f"💰 Total order amount: ₵{total_amount}")
 
-    points_value = points_wallet.balance / Decimal("10")
-    usable_points = min(points_value, total_amount)
-    points_to_deduct = usable_points * Decimal("10")
+    # --- Calculate usable points ---
+    usable_points_cedis = min(points_wallet.balance / Decimal("10"), total_amount)
+    points_to_deduct = usable_points_cedis * Decimal("10")
 
-    # ========================================================
-    # 💰 WALLET PAYMENT
-    # ========================================================
+    # ============================================================
+    # 💳 WALLET PAYMENT
+    # ============================================================
     if payment_method == "wallet":
-        print("💳 Using WALLET payment method")
-        total_after_points = total_amount - usable_points
+        total_after_points = total_amount - usable_points_cedis
 
         if wallet.balance < total_after_points:
-            print("❌ Insufficient wallet balance")
-            return Response({"error": "Insufficient wallet balance."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Insufficient wallet balance."}, status=400)
 
+        # Deduct points + wallet
         try:
             points_wallet.redeem_points(points_to_deduct)
         except Exception as e:
@@ -127,8 +124,8 @@ def create_order(request):
         wallet.balance -= total_after_points
         wallet.save()
 
-        log_transaction(user, "withdraw", total_after_points, "Wallet purchase")
-        log_transaction(user, "points_used", usable_points, f"Used {points_to_deduct} points")
+        log_transaction(user, "wallet_purchase", total_after_points, "Purchase via wallet")
+        log_transaction(user, "points_used", usable_points_cedis, f"Used {points_to_deduct} pts")
 
         order = Order.objects.create(
             user=user,
@@ -136,35 +133,30 @@ def create_order(request):
             total_amount=total_amount,
             payment_method="wallet",
             status="paid",
-            note=f"₵{usable_points:.2f} from points, ₵{total_after_points:.2f} wallet.",
+            note=f"₵{usable_points_cedis:.2f} from points, ₵{total_after_points:.2f} from wallet.",
         )
-        print(f"✅ Order created (wallet): ID={order.id}")
+        print(f"✅ Wallet order created: #{order.id}")
 
-    # ========================================================
+    # ============================================================
     # 💳 CREDIT (BNPL)
-    # ========================================================
+    # ============================================================
     elif payment_method == "credit":
-        print("💳 Using CREDIT payment method")
         down_payment = total_amount * Decimal("0.30")
         remaining = total_amount - down_payment
         interest = remaining * Decimal("0.05")
         total_credit = remaining + interest
 
-        print(f"📊 Down: ₵{down_payment}, Interest: ₵{interest}, Credit: ₵{total_credit}")
-
         if wallet.balance < down_payment:
-            print("❌ Insufficient wallet balance for downpayment")
-            return Response({"error": "Insufficient wallet balance for downpayment."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Insufficient wallet balance for downpayment."}, status=400)
         if wallet.credit_balance + total_credit > wallet.credit_limit:
-            print("❌ Credit limit exceeded")
-            return Response({"error": "Credit limit exceeded."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Credit limit exceeded."}, status=400)
 
         wallet.balance -= down_payment
         wallet.credit_balance += total_credit
         wallet.save()
 
-        log_transaction(user, "withdraw", down_payment, "Credit downpayment")
-        log_transaction(user, "credit_purchase", total_credit, "BNPL order")
+        log_transaction(user, "credit_downpayment", down_payment, "BNPL order")
+        log_transaction(user, "credit_issued", total_credit, "Credit purchase")
 
         order = Order.objects.create(
             user=user,
@@ -173,58 +165,49 @@ def create_order(request):
             payment_method="credit",
             status="pending",
             note=f"30% down ₵{down_payment:.2f}, 5% interest.",
-            down_payment=down_payment,
-            interest=interest,
-            credit_amount=total_credit,
-            due_date=timezone.now() + timedelta(days=14),
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
         )
-        print(f"✅ Order created (credit): ID={order.id}")
+        print(f"✅ Credit order created: #{order.id}")
 
     else:
-        print("❌ Invalid payment method")
-        return Response({"error": "Invalid payment method."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid payment method."}, status=400)
 
-    # ========================================================
-    # 🛍 Save order items
-    # ========================================================
+    # ============================================================
+    # 🛒 CREATE ORDER ITEMS + REWARD PARTNERS
+    # ============================================================
     for item in items:
-        product_name = item.get("name", "Unnamed")
+        name = item.get("name", "Unnamed Product")
         price = Decimal(str(item.get("price", 0)))
         qty = int(item.get("qty", 1))
         image = item.get("image", "")
         partner_id = item.get("partner_id")
 
-        print(f"🧩 Adding item: {product_name}, ₵{price}, Qty {qty}, Partner {partner_id}")
-
         order_item = OrderItem.objects.create(
             order=order,
             price=price,
             quantity=qty,
-            product_name_snapshot=product_name,
+            product_name_snapshot=name,
             product_image_snapshot=image,
         )
 
-        # 🤝 Reward partner
+        # 🤝 Partner reward logic
         if partner_id:
             try:
                 partner_user = User.objects.get(id=partner_id)
-                listing = PartnerListing.objects.filter(
-                    partner=partner_user, product__name=product_name
-                ).first()
+                listing = PartnerListing.objects.filter(partner=partner_user, product__name=name).first()
                 if listing:
                     profit = listing.markup * qty
-                    points_earned = profit * Decimal("10")
-                    print(f"💎 Partner profit ₵{profit} → +{points_earned} pts")
-
+                    points = profit * Decimal("10")
                     partner_points, _ = KudiPoints.objects.get_or_create(user=partner_user)
-                    partner_points.add_points(points_earned)
-                    log_transaction(partner_user, "partner_points_earned", profit, f"Resale of {product_name}")
+                    partner_points.add_points(points)
+                    log_transaction(partner_user, "partner_points", profit, f"Resale of {name}")
+                    print(f"💎 Partner reward: +{points} pts ({partner_user.username})")
             except Exception as e:
                 print("⚠️ Partner reward failed:", e)
 
     serializer = OrderSerializer(order, context={"request": request})
-    print("✅ Order complete and serialized")
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.data, status=201)
 
 
 # ============================================================
@@ -233,11 +216,10 @@ def create_order(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_orders(request):
-    print(f"📜 DEBUG: Fetching orders for {request.user.username}")
+    """Fetch authenticated user's past orders."""
     orders = Order.objects.filter(user=request.user).order_by("-created_at")
     serializer = OrderSerializer(orders, many=True, context={"request": request})
-    print(f"✅ Found {len(orders)} orders")
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(serializer.data, status=200)
 
 
 # ============================================================
@@ -246,74 +228,57 @@ def list_orders(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_partner_listing(request):
-    print("🚀 DEBUG: create_partner_listing called")
-    print("🧾 Incoming data:", request.data)
-    print("👤 User:", request.user)
-
+    """Verified partners can list existing products for resale."""
     user = request.user
     if not hasattr(user, "profile") or not user.profile.is_verified_partner:
-        print("⛔ User not verified partner")
         return Response({"error": "Only verified partners can create listings."}, status=403)
 
     product_id = request.data.get("product_id")
     markup_raw = request.data.get("markup", "0.00")
-    print("🧩 Product ID:", product_id, "| Markup:", markup_raw)
 
     try:
         markup = Decimal(markup_raw)
     except Exception:
-        print("❌ Invalid markup input")
         return Response({"error": "Invalid markup amount."}, status=400)
 
     try:
         product = Product.objects.get(id=product_id)
-        print("✅ Product found:", product.name)
     except Product.DoesNotExist:
-        print("❌ Product not found")
         return Response({"error": "Product not found."}, status=404)
 
-    try:
-        listing, created = PartnerListing.objects.get_or_create(
-            partner=user,
-            product=product,
-            defaults={"markup": markup, "resale_price": product.price + markup},
-        )
+    listing, created = PartnerListing.objects.get_or_create(
+        partner=user,
+        product=product,
+        defaults={"markup": markup, "resale_price": product.price + markup},
+    )
 
-        if not created:
-            listing.markup = markup
-            listing.resale_price = product.price + markup
-            listing.save()
-            print("🔁 Updated existing listing")
+    if not created:
+        listing.markup = markup
+        listing.resale_price = product.price + markup
+        listing.save()
 
-        print("✅ Listing created successfully")
-        return Response(
-            {
-                "message": "Listing created successfully!",
-                "product": product.name,
-                "markup": str(listing.markup),
-                "resale_price": str(listing.resale_price),
-            },
-            status=201,
-        )
-    except Exception as e:
-        print("❌ ERROR creating listing:", e)
-        return Response({"error": str(e)}, status=500)
+    return Response(
+        {
+            "message": "Listing created successfully!",
+            "product": product.name,
+            "markup": str(listing.markup),
+            "resale_price": str(listing.resale_price),
+        },
+        status=201,
+    )
 
 
 # ============================================================
-# 🤝 LIST MY PARTNER LISTINGS
+# 📋 LIST LOGGED-IN PARTNER’S OWN LISTINGS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_partner_listings(request):
+    """Return all resale listings created by the logged-in verified partner."""
     user = request.user
-    print(f"📋 DEBUG: get_partner_listings() called by {user.username}")
-
     if not hasattr(user, "profile") or not user.profile.is_verified_partner:
-        print("⛔ User not verified partner")
         return Response({"error": "Only verified partners can view listings."}, status=403)
 
     listings = PartnerListing.objects.filter(partner=user).select_related("product").order_by("-created_at")
-    print(f"✅ Found {listings.count()} listings for {user.username}")
     serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
     return Response(serializer.data, status=200)

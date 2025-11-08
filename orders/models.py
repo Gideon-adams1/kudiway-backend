@@ -27,7 +27,7 @@ class Product(models.Model):
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
-    # ✅ Store all images directly in Cloudinary
+    # ✅ Store all images in Cloudinary
     image = CloudinaryField("image", blank=True, null=True)
     image2 = CloudinaryField("image", blank=True, null=True)
     image3 = CloudinaryField("image", blank=True, null=True)
@@ -53,8 +53,8 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         """
-        ✅ Always ensure Cloudinary URLs are saved as full HTTPS links.
-        This guarantees images persist across restarts and rebuilds.
+        ✅ Always ensure Cloudinary URLs are stored as HTTPS links.
+        Keeps image paths persistent even after restarts.
         """
         for field_name in ["image", "image2", "image3", "image4", "image5"]:
             field = getattr(self, field_name)
@@ -63,7 +63,6 @@ class Product(models.Model):
                     url = str(field.url).replace("http://", "https://")
                     setattr(self, field_name, url)
                 except Exception:
-                    # Already stored as string or missing .url attr
                     if isinstance(field, str) and field.startswith("http"):
                         setattr(self, field_name, field.replace("http://", "https://"))
                     elif isinstance(field, str) and len(field) < 100 and "/" not in field:
@@ -79,6 +78,13 @@ class Product(models.Model):
 # 🤝 PARTNER LISTING MODEL (Resell & Earn)
 # ============================================================
 class PartnerListing(models.Model):
+    """
+    Represents a product that a verified partner has listed for resale.
+    - Base product comes from Product
+    - Partner adds a profit markup
+    - Profit later converted into points after purchase
+    """
+
     partner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -95,7 +101,7 @@ class PartnerListing(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        """Automatically calculate resale price and create unique slug."""
+        """Auto-generate resale price & unique slug."""
         if not self.resale_price:
             self.resale_price = (self.product.price or 0) + self.markup
 
@@ -155,6 +161,7 @@ class Order(models.Model):
     def __str__(self):
         return f"Order #{self.id} — {self.user} — ₵{self.total_amount}"
 
+    # 🔁 Recompute totals before saving
     def recompute_totals(self):
         subtotal = Decimal("0.00")
         for item in self.items.all():
@@ -164,8 +171,20 @@ class Order(models.Model):
         return self.total_amount
 
     def save(self, *args, **kwargs):
+        """Recalculate totals and award partner points on completed orders."""
         if self.pk:
             self.recompute_totals()
+
+            # 🪙 Reward reseller points automatically if order is marked as PAID or DELIVERED
+            if self.status in [self.Status.PAID, self.Status.DELIVERED]:
+                for item in self.items.all():
+                    if item.partner and hasattr(item.partner, "points"):
+                        base_price = getattr(item.product, "price", Decimal("0.00"))
+                        profit = max(Decimal("0.00"), item.price - base_price)
+                        if profit > 0:
+                            points = int(profit * 10)  # 10 pts = ₵1
+                            item.partner.points.add_points(points)
+
         super().save(*args, **kwargs)
 
 
@@ -191,7 +210,7 @@ class OrderItem(models.Model):
         null=True,
         blank=True,
         related_name="partner_order_items",
-        help_text="If the item was sold through a partner, this links the reseller.",
+        help_text="If sold through a partner, links reseller to sale.",
     )
 
     def line_total(self):
@@ -199,8 +218,7 @@ class OrderItem(models.Model):
 
     def save(self, *args, **kwargs):
         """
-        ✅ Always preserve image & name snapshots as full HTTPS URLs.
-        Ensures order history keeps showing correct product visuals.
+        ✅ Preserve snapshots so historical orders retain correct visuals even if products change.
         """
         if not self.product_name_snapshot and self.product:
             self.product_name_snapshot = getattr(self.product, "name", str(self.product))

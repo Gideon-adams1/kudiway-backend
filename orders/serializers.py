@@ -1,28 +1,32 @@
 from rest_framework import serializers
 from .models import Order, OrderItem, Product, PartnerListing
 
+
 # ============================================================
-# 🌍 Helper: Build absolute or Cloudinary URL
+# 🌍 Helper — Build secure, absolute or Cloudinary URL
 # ============================================================
 def build_full_url(request, image_field):
-    """Return a valid absolute URL (handles Cloudinary public_id or full URL)"""
+    """Return an absolute, HTTPS-safe Cloudinary or media URL."""
     if not image_field:
         return None
 
     try:
-        url = image_field.url  # works for Django FileFields
+        url = image_field.url  # Works for FileFields
     except Exception:
-        url = str(image_field)  # fallback if it's stored as plain text
+        url = str(image_field)  # Fallback if it's stored as string
 
-    # ✅ If it's already a full URL
+    if not url:
+        return None
+
+    # ✅ Already a full URL
     if url.startswith("http"):
         return url.replace("http://", "https://")
 
-    # ✅ If it's a Cloudinary public_id (no slashes, short string)
+    # ✅ Likely a Cloudinary public ID
     if len(url) < 100 and "/" not in url:
         return f"https://res.cloudinary.com/dmpymbirt/image/upload/{url}.jpg"
 
-    # ✅ Otherwise build absolute URI for local files
+    # ✅ Local media file
     return request.build_absolute_uri(url) if request else url
 
 
@@ -79,6 +83,9 @@ class ProductSerializer(serializers.ModelSerializer):
 # 🤝 PARTNER LISTING SERIALIZER
 # ============================================================
 class PartnerListingSerializer(serializers.ModelSerializer):
+    """Expose resale listings with attached base product info."""
+
+    # 🔹 Basic product data flattening
     name = serializers.CharField(source="product.name", read_only=True)
     description = serializers.CharField(source="product.description", read_only=True)
     category = serializers.CharField(source="product.category", read_only=True)
@@ -88,8 +95,10 @@ class PartnerListingSerializer(serializers.ModelSerializer):
     partner = serializers.CharField(source="partner.username", read_only=True)
     is_resale = serializers.SerializerMethodField()
 
+    # 🔹 Nested product data
     product = serializers.SerializerMethodField()
 
+    # 🔹 Flatten Cloudinary images
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
@@ -147,12 +156,14 @@ class OrderItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product_name_snapshot", read_only=True)
     image = serializers.SerializerMethodField()
     line_total = serializers.SerializerMethodField()
+    partner = serializers.CharField(source="partner.username", read_only=True, default=None)
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product_name", "image", "price", "quantity", "line_total"]
+        fields = ["id", "product_name", "image", "price", "quantity", "line_total", "partner"]
 
     def get_image(self, obj):
+        """Return secure snapshot image."""
         request = self.context.get("request")
         if obj.product_image_snapshot:
             return build_full_url(request, obj.product_image_snapshot)
@@ -166,7 +177,16 @@ class OrderItemSerializer(serializers.ModelSerializer):
 # 💳 ORDER SERIALIZER
 # ============================================================
 class OrderSerializer(serializers.ModelSerializer):
+    """
+    Serializes entire order, with nested items and total breakdown.
+    Automatically includes partner name if order was made via reseller.
+    """
+
     items = OrderItemSerializer(many=True, read_only=True)
+    vendor_name = serializers.CharField(source="vendor.username", read_only=True, default=None)
+    user_name = serializers.CharField(source="user.username", read_only=True)
+    total_points_earned = serializers.SerializerMethodField()
+
     down_payment = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     interest = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     credit_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
@@ -176,8 +196,8 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
-            "user",
-            "vendor",
+            "user_name",
+            "vendor_name",
             "subtotal_amount",
             "total_amount",
             "payment_method",
@@ -190,14 +210,26 @@ class OrderSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "items",
+            "total_points_earned",
         ]
         read_only_fields = [
             "id",
-            "user",
-            "vendor",
+            "user_name",
+            "vendor_name",
             "subtotal_amount",
             "total_amount",
             "status",
             "created_at",
             "updated_at",
+            "total_points_earned",
         ]
+
+    def get_total_points_earned(self, obj):
+        """Calculate total points earned from resold items."""
+        total_points = 0
+        for item in obj.items.all():
+            if item.partner:
+                base_price = getattr(item.product, "price", 0)
+                profit = max(0, item.price - base_price)
+                total_points += int(profit * 10)  # 10 pts = ₵1
+        return total_points
