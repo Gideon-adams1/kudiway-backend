@@ -57,9 +57,11 @@ class Product(models.Model):
             field = getattr(self, field_name)
             if field:
                 try:
+                    # CloudinaryField with .url
                     url = str(field.url).replace("http://", "https://")
                     setattr(self, field_name, url)
                 except Exception:
+                    # If it's already a string (stored URL or public id)
                     if isinstance(field, str) and field.startswith("http"):
                         setattr(self, field_name, field.replace("http://", "https://"))
                     elif isinstance(field, str) and len(field) < 100 and "/" not in field:
@@ -120,7 +122,7 @@ class PartnerListing(models.Model):
             self.referral_code = uuid.uuid4().hex[:8]
 
         # 🌐 Construct referral URL
-        base_domain = "https://kudiwayapp.com"  # ✅ replace with production domain
+        base_domain = "https://kudiwayapp.com"  # 🔁 replace with production domain if needed
         self.referral_url = f"{base_domain}/r/{self.referral_code}"
 
         super().save(*args, **kwargs)
@@ -155,7 +157,7 @@ class Order(models.Model):
         null=True,
         blank=True,
     )
-    partner = models.ForeignKey(  # ✅ if sold via referral
+    partner = models.ForeignKey(  # optional overall partner on order (not required if tracked per item)
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         related_name="partner_sales",
@@ -190,25 +192,45 @@ class Order(models.Model):
         return self.total_amount
 
     def save(self, *args, **kwargs):
-        """Recalculate totals & distribute partner profit after purchase."""
+        """
+        Recalculate totals & distribute partner profit ONLY after payment confirmation.
+        - Profit per line = max(item.price - product.base_price, 0) * quantity
+        - Accumulate into PartnerListing.total_profit
+        - Increment PartnerListing.sales_count by quantity
+        """
+        # If updating an existing order, recompute subtotal/total
         if self.pk:
             self.recompute_totals()
 
-            # 💰 Distribute confirmed partner profit when paid/delivered
+            # 💰 Confirmed earnings only when paid or delivered
             if self.status in [self.Status.PAID, self.Status.DELIVERED]:
                 for item in self.items.all():
                     if item.partner:
-                        base_price = getattr(item.product, "price", Decimal("0.00"))
-                        profit = max(Decimal("0.00"), item.price - base_price)
-                        if profit > 0:
-                            # Add confirmed profit to PartnerListing
+                        # Safely get the base price from product (fallback to 0 if product missing)
+                        base_price = getattr(item.product, "price", None)
+                        if base_price is None:
+                            base_price = Decimal("0.00")
+
+                        # Profit per unit
+                        unit_profit = item.price - base_price
+                        if unit_profit < 0:
+                            unit_profit = Decimal("0.00")
+
+                        # Total profit for the line
+                        line_profit = unit_profit * item.quantity
+                        if line_profit > 0:
+                            # Find the listing (if it exists) to attribute the sale
                             listing = PartnerListing.objects.filter(
-                                partner=item.partner, product=item.product
+                                partner=item.partner,
+                                product=item.product
                             ).first()
+
                             if listing:
-                                listing.sales_count += 1
-                                listing.total_profit += profit
+                                listing.sales_count += item.quantity
+                                listing.total_profit = (listing.total_profit or Decimal("0.00")) + line_profit
+                                # Persist safely
                                 listing.save(update_fields=["sales_count", "total_profit"])
+
         super().save(*args, **kwargs)
 
 
