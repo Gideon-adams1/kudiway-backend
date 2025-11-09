@@ -20,13 +20,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-fallback-secret-key")
 # 🚨 Always False in production
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = [
-    "kudiway.com",
-    "www.kudiway.com",
-    "kudiway-backend.onrender.com",
-    "localhost",
-    "127.0.0.1",
-]
+ALLOWED_HOSTS = ["kudiway.com", "www.kudiway.com", "kudiway-backend.onrender.com", "kudiway-backend.onrender.com."]
+
 
 # -------------------------------------------------
 # Installed Apps
