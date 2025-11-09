@@ -5,6 +5,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.conf import settings
 from django.conf.urls.static import static
 
+# 🔹 Import referral view from orders
+from orders import views as order_views
+
 urlpatterns = [
     path('admin/', admin.site.urls),
 
@@ -33,8 +36,11 @@ urlpatterns = [
     path('api/kyc/approve/<int:kyc_id>/', wallet_views.approve_kyc_admin, name='approve_kyc_admin'),
     path('api/kyc/reject/<int:kyc_id>/', wallet_views.reject_kyc_admin, name='reject_kyc_admin'),
 
-    # ✅ Other app routes
+    # ✅ Orders & Store routes
     path('api/orders/', include('orders.urls')),
+
+    # ✅ Root referral route (for short links like https://kudiway.com/r/<ref_code>)
+    path('r/<slug:ref_code>/', order_views.get_referral_product, name='referral_short'),
 ]
 
 # ✅ Media files (images, KYC docs, etc.)
