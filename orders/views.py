@@ -33,33 +33,32 @@ def log_transaction(user, transaction_type, amount, description=""):
 
 
 # ============================================================
-# 🏬 STORE — LIST PRODUCTS + PARTNER LISTINGS
+# 🏬 STORE — LIST PRODUCTS (Only Originals)
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def list_products(request):
-    """Return all Kudiway products + partner resell listings."""
+    """
+    Return only Kudiway store products.
+    Resale (partner) listings are excluded from the main store.
+    """
     try:
         products = Product.objects.all().order_by("-created_at")
-        listings = PartnerListing.objects.select_related("product", "partner").order_by("-created_at")
-
-        product_data = ProductSerializer(products, many=True, context={"request": request}).data
-        listing_data = PartnerListingSerializer(listings, many=True, context={"request": request}).data
-
-        print(f"✅ {len(products)} products + {len(listings)} partner listings loaded.")
-        return Response(product_data + listing_data, status=200)
+        data = ProductSerializer(products, many=True, context={"request": request}).data
+        print(f"✅ {len(products)} original products loaded.")
+        return Response(data, status=200)
     except Exception as e:
         print("❌ ERROR listing products:", e)
         return Response({"error": str(e)}, status=500)
 
 
 # ============================================================
-# 📦 SINGLE PRODUCT OR LISTING
+# 📦 SINGLE PRODUCT OR PARTNER LISTING
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def get_product(request, pk):
-    """Retrieve a product or resale listing by ID."""
+    """Retrieve a single product or partner listing."""
     try:
         product = Product.objects.get(pk=pk)
         serializer = ProductSerializer(product, context={"request": request})
@@ -82,7 +81,7 @@ def get_product(request, pk):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_order(request):
-    """Handles order creation and partner rewards."""
+    """Handles order creation, partner tracking, and payment deductions."""
     user = request.user
     print(f"🧾 Creating order for {user.username}")
 
@@ -161,12 +160,11 @@ def create_order(request):
             updated_at=timezone.now(),
         )
         print(f"✅ Credit order #{order.id} created.")
-
     else:
         return Response({"error": "Invalid payment method."}, status=400)
 
     # ========================================================
-    # 🛒 CREATE ORDER ITEMS + REWARD PARTNERS
+    # 🛒 CREATE ORDER ITEMS + LINK PARTNER SALES
     # ========================================================
     for item in items:
         name = item.get("name", "Unnamed Product")
@@ -183,21 +181,15 @@ def create_order(request):
             product_image_snapshot=image,
         )
 
+        # 🔗 If item was sold through a referral link, link partner to sale
         if partner_id:
             try:
                 partner_user = User.objects.get(id=partner_id)
-                listing = PartnerListing.objects.filter(partner=partner_user, product__name=name).first()
-                if listing:
-                    profit = listing.markup * qty
-                    points = profit * Decimal("10")
-                    partner_points, _ = KudiPoints.objects.get_or_create(user=partner_user)
-                    partner_points.add_points(points)
-                    log_transaction(partner_user, "partner_points", profit, f"Resale of {name}")
-                    listing.sales_count += 1
-                    listing.save(update_fields=["sales_count"])
-                    print(f"💎 Partner reward: +{points} pts ({partner_user.username})")
+                order_item.partner = partner_user
+                order_item.save()
+                print(f"🔗 Linked partner {partner_user.username} to order item {name}.")
             except Exception as e:
-                print("⚠️ Partner reward failed:", e)
+                print("⚠️ Failed to link partner:", e)
 
     serializer = OrderSerializer(order, context={"request": request})
     return Response(serializer.data, status=201)
@@ -223,7 +215,8 @@ def list_orders(request):
 def create_partner_listing(request):
     """Allow verified partners to generate affiliate links for resale."""
     user = request.user
-    if not hasattr(user, "profile") or not user.profile.is_verified_partner:
+    profile = getattr(user, "profile", None)
+    if not profile or not profile.is_verified_partner:
         return Response({"error": "Only verified partners can create listings."}, status=403)
 
     product_id = request.data.get("product_id")
@@ -250,21 +243,19 @@ def create_partner_listing(request):
         listing.markup = markup
         listing.final_price = product.price + markup
 
-    # Auto-generate referral code + link if missing
     if not listing.referral_code:
         listing.referral_code = uuid.uuid4().hex[:8]
     listing.referral_url = f"https://kudiwayapp.com/r/{listing.referral_code}"
-
     listing.save()
 
+    serializer = PartnerListingSerializer(listing, context={"request": request})
+
+    # After successful creation → front end should open KPartner Hub automatically
     return Response(
         {
             "message": "Listing created successfully!",
-            "product": product.name,
-            "markup": str(listing.markup),
-            "final_price": str(listing.final_price),
-            "referral_code": listing.referral_code,
-            "referral_url": listing.referral_url,
+            "listing": serializer.data,
+            "redirect_to": "KPartnerHubScreen",
         },
         status=201,
     )
@@ -278,7 +269,8 @@ def create_partner_listing(request):
 def get_partner_listings(request):
     """Return all resale listings for the logged-in verified partner."""
     user = request.user
-    if not hasattr(user, "profile") or not user.profile.is_verified_partner:
+    profile = getattr(user, "profile", None)
+    if not profile or not profile.is_verified_partner:
         return Response({"error": "Only verified partners can view listings."}, status=403)
 
     listings = PartnerListing.objects.filter(partner=user).select_related("product").order_by("-created_at")
@@ -287,21 +279,24 @@ def get_partner_listings(request):
 
 
 # ============================================================
-# 🔗 AFFILIATE / REFERRAL PRODUCT (NEW)
+# 🔗 AFFILIATE / REFERRAL PRODUCT (BUYER VIEW)
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def get_referral_product(request, ref_code):
     """
-    When someone opens a referral link (e.g. /orders/referral/abc123/):
-    - Look up the PartnerListing via referral_code
-    - Count the click for analytics
-    - Return the full product + partner + final price
+    When someone opens a referral link (e.g. /r/abc123):
+    - Lookup PartnerListing via referral_code
+    - Count click
+    - Return full product + partner info for checkout screen
+    - Buyer only sees final price (₵base + ₵markup)
     """
     try:
         listing = PartnerListing.objects.select_related("product", "partner").get(referral_code=ref_code)
         listing.clicks += 1
         listing.save(update_fields=["clicks"])
+
+        # Return full PartnerListing — buyer app will show product detail & checkout
         serializer = PartnerListingSerializer(listing, context={"request": request})
         return Response(serializer.data, status=200)
     except PartnerListing.DoesNotExist:

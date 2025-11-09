@@ -52,7 +52,7 @@ class Product(models.Model):
         return 0
 
     def save(self, *args, **kwargs):
-        """Ensure all Cloudinary URLs are HTTPS."""
+        """Ensure all Cloudinary URLs are HTTPS and normalized."""
         for field_name in ["image", "image2", "image3", "image4", "image5"]:
             field = getattr(self, field_name)
             if field:
@@ -72,12 +72,12 @@ class Product(models.Model):
 
 
 # ============================================================
-# 🤝 PARTNER LISTING MODEL (Affiliate Resale)
+# 🤝 PARTNER LISTING MODEL (Affiliate / Resale)
 # ============================================================
 class PartnerListing(models.Model):
     """
     Verified partner resells a Kudiway product with a profit markup.
-    Buyer only sees the final (base + markup) price via the referral link.
+    Buyers only see the final (base + markup) price via the referral link.
     """
 
     partner = models.ForeignKey(
@@ -97,15 +97,20 @@ class PartnerListing(models.Model):
     referral_url = models.URLField(blank=True, null=True)
     clicks = models.PositiveIntegerField(default=0)
     sales_count = models.PositiveIntegerField(default=0)
+    total_profit = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00"),
+        help_text="Accumulates total confirmed profit from completed sales."
+    )
     slug = models.SlugField(unique=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        """Generate final price, referral link, and unique slug."""
-        # Compute final resale price
-        self.final_price = (self.product.price or Decimal("0.00")) + (self.markup or Decimal("0.00"))
+        """Generate unique slug, referral code, and final price."""
+        # 🧮 Compute resale price
+        base = self.product.price or Decimal("0.00")
+        self.final_price = base + (self.markup or Decimal("0.00"))
 
-        # Generate unique slug and referral code
+        # 🪪 Unique slug + referral code
         if not self.slug:
             base_slug = slugify(f"{self.partner.username}-{self.product.name}")
             unique_id = uuid.uuid4().hex[:6]
@@ -114,8 +119,8 @@ class PartnerListing(models.Model):
         if not self.referral_code:
             self.referral_code = uuid.uuid4().hex[:8]
 
-        # Construct referral URL
-        base_domain = "https://kudiwayapp.com"  # ✅ replace with your real domain
+        # 🌐 Construct referral URL
+        base_domain = "https://kudiwayapp.com"  # ✅ replace with production domain
         self.referral_url = f"{base_domain}/r/{self.referral_code}"
 
         super().save(*args, **kwargs)
@@ -150,6 +155,13 @@ class Order(models.Model):
         null=True,
         blank=True,
     )
+    partner = models.ForeignKey(  # ✅ if sold via referral
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="partner_sales",
+        null=True,
+        blank=True,
+    )
     subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     payment_method = models.CharField(
@@ -178,18 +190,25 @@ class Order(models.Model):
         return self.total_amount
 
     def save(self, *args, **kwargs):
-        """Recalculate totals & reward partner points after payment."""
+        """Recalculate totals & distribute partner profit after purchase."""
         if self.pk:
             self.recompute_totals()
 
+            # 💰 Distribute confirmed partner profit when paid/delivered
             if self.status in [self.Status.PAID, self.Status.DELIVERED]:
                 for item in self.items.all():
-                    if item.partner and hasattr(item.partner, "points"):
+                    if item.partner:
                         base_price = getattr(item.product, "price", Decimal("0.00"))
                         profit = max(Decimal("0.00"), item.price - base_price)
                         if profit > 0:
-                            pts = int(profit * 10)  # 10 pts = ₵1
-                            item.partner.points.add_points(pts)
+                            # Add confirmed profit to PartnerListing
+                            listing = PartnerListing.objects.filter(
+                                partner=item.partner, product=item.product
+                            ).first()
+                            if listing:
+                                listing.sales_count += 1
+                                listing.total_profit += profit
+                                listing.save(update_fields=["sales_count", "total_profit"])
         super().save(*args, **kwargs)
 
 
@@ -215,7 +234,7 @@ class OrderItem(models.Model):
         null=True,
         blank=True,
         related_name="partner_order_items",
-        help_text="If the item was sold through a partner, links reseller to sale.",
+        help_text="If the item was sold through a partner referral link.",
     )
 
     def line_total(self):

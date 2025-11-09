@@ -1,7 +1,6 @@
-from decimal import Decimal  # ✅ Add this line
+from decimal import Decimal
 from rest_framework import serializers
 from .models import Order, OrderItem, Product, PartnerListing
-
 
 
 # ============================================================
@@ -76,7 +75,7 @@ class ProductSerializer(serializers.ModelSerializer):
 # 🤝 PARTNER LISTING SERIALIZER (Affiliate System)
 # ============================================================
 class PartnerListingSerializer(serializers.ModelSerializer):
-    """Expose affiliate listing data + linked base product."""
+    """Expose partner resale data with detailed product info."""
 
     # Flattened product data
     name = serializers.CharField(source="product.name", read_only=True)
@@ -86,6 +85,7 @@ class PartnerListingSerializer(serializers.ModelSerializer):
     oldPrice = serializers.DecimalField(source="product.old_price", max_digits=10, decimal_places=2, read_only=True)
     base_price = serializers.DecimalField(source="product.price", max_digits=10, decimal_places=2, read_only=True)
     partner = serializers.CharField(source="partner.username", read_only=True)
+    total_profit = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     final_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     referral_code = serializers.CharField(read_only=True)
     referral_url = serializers.URLField(read_only=True)
@@ -109,6 +109,7 @@ class PartnerListingSerializer(serializers.ModelSerializer):
             "base_price",
             "final_price",
             "markup",
+            "total_profit",
             "oldPrice",
             "category",
             "rating",
@@ -127,8 +128,12 @@ class PartnerListingSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    def get_is_resale(self, obj): return True
-    def get_product(self, obj): return ProductSerializer(obj.product, context=self.context).data if obj.product else None
+    def get_is_resale(self, obj):
+        return True
+
+    def get_product(self, obj):
+        return ProductSerializer(obj.product, context=self.context).data if obj.product else None
+
     def get_image(self, obj): return build_full_url(self.context.get("request"), getattr(obj.product, "image", None))
     def get_image2(self, obj): return build_full_url(self.context.get("request"), getattr(obj.product, "image2", None))
     def get_image3(self, obj): return build_full_url(self.context.get("request"), getattr(obj.product, "image3", None))
@@ -163,11 +168,12 @@ class OrderItemSerializer(serializers.ModelSerializer):
 # 💳 ORDER SERIALIZER
 # ============================================================
 class OrderSerializer(serializers.ModelSerializer):
-    """Full order serializer with reseller reward calculation."""
+    """Full order serializer with reseller profit tracking."""
 
     items = OrderItemSerializer(many=True, read_only=True)
     vendor_name = serializers.CharField(source="vendor.username", read_only=True, default=None)
     user_name = serializers.CharField(source="user.username", read_only=True)
+    partner_name = serializers.CharField(source="partner.username", read_only=True, default=None)
     total_points_earned = serializers.SerializerMethodField()
 
     down_payment = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
@@ -181,6 +187,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "id",
             "user_name",
             "vendor_name",
+            "partner_name",
             "subtotal_amount",
             "total_amount",
             "payment_method",
@@ -199,6 +206,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "id",
             "user_name",
             "vendor_name",
+            "partner_name",
             "subtotal_amount",
             "total_amount",
             "status",

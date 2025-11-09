@@ -1,12 +1,11 @@
-# orders/urls.py
-from django.urls import path
+from django.urls import path, re_path
 from . import views
 
 urlpatterns = [
     # ============================================================
     # 🏬 STORE ROUTES
     # ============================================================
-    # 🔹 Get all products (vendor + partner listings)
+    # 🔹 Get all products (main Kudiway store)
     path("products/", views.list_products, name="list_products"),
 
     # 🔹 Get details for a single product (by ID)
@@ -22,7 +21,7 @@ urlpatterns = [
     path("user-orders/", views.list_orders, name="list_orders"),
 
     # ============================================================
-    # 🤝 PARTNER LISTINGS (Resell & Earn)
+    # 🤝 PARTNER LISTINGS (Affiliate Resell)
     # ============================================================
     # 🔹 Create or update a resale listing
     path("create-partner-listing/", views.create_partner_listing, name="create_partner_listing"),
@@ -31,8 +30,11 @@ urlpatterns = [
     path("my-listings/", views.get_partner_listings, name="get_partner_listings"),
 
     # ============================================================
-    # 🔗 AFFILIATE / REFERRAL LINK
+    # 🔗 AFFILIATE / REFERRAL LINKS
     # ============================================================
-    # 🔹 New endpoint — used when someone opens a referral link (e.g., /orders/referral/abc123/)
+    # 🔹 Used when a buyer opens a referral link (API endpoint)
     path("referral/<str:ref_code>/", views.get_referral_product, name="get_referral_product"),
+
+    # 🔹 Web-friendly short route for deep links (e.g., https://kudiwayapp.com/r/abc123)
+    re_path(r"^r/(?P<ref_code>[A-Za-z0-9]+)/$", views.get_referral_product, name="get_referral_product_short"),
 ]
