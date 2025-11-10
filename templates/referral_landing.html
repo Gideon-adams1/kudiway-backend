@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ product.name }} | Kudiway Referral</title>
+
+  <meta name="description" content="{{ product.description|default:'Buy this amazing product from Kudiway!' }}" />
+  <meta property="og:title" content="{{ product.name }}" />
+  <meta property="og:description" content="{{ product.description|default:'Available now on Kudiway.' }}" />
+  <meta property="og:image" content="{% if product.image %}{{ product.image.url|default:product.image }}{% endif %}" />
+  <meta property="og:url" content="https://kudiway.com/r/{{ listing.referral_code }}" />
+
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #0077B6, #00B4D8);
+      color: white;
+      text-align: center;
+      padding: 40px 20px;
+      margin: 0;
+    }
+
+    .card {
+      background: white;
+      color: #222;
+      border-radius: 16px;
+      padding: 25px;
+      max-width: 420px;
+      margin: 30px auto;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+      transition: transform 0.2s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+    }
+
+    img {
+      width: 100%;
+      border-radius: 10px;
+      margin-bottom: 15px;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+    }
+
+    .price {
+      font-size: 20px;
+      font-weight: bold;
+      color: #0077B6;
+      margin: 10px 0;
+    }
+
+    .btn {
+      display: inline-block;
+      background: #FFD60A;
+      color: #222;
+      padding: 12px 18px;
+      margin-top: 15px;
+      font-weight: 700;
+      border-radius: 10px;
+      text-decoration: none;
+      transition: background 0.2s ease;
+    }
+
+    .btn:hover {
+      background: #FFC300;
+    }
+
+    .small {
+      color: #555;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    footer {
+      margin-top: 30px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+  </style>
+
+  <script>
+    // 🔗 Auto-redirect to app if installed (Android & iOS)
+    document.addEventListener("DOMContentLoaded", function () {
+      const appLink = "{{ deep_link }}";
+      if (/android/i.test(navigator.userAgent)) {
+        window.location.href = appLink;
+        setTimeout(() => (window.location.href = "https://kudiway.com"), 2000);
+      } else if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+        window.location.href = appLink;
+        setTimeout(() => (window.location.href = "https://apps.apple.com"), 2000);
+      }
+    });
+  </script>
+</head>
+
+<body>
+  <h1>🛍️ Kudiway Product Referral</h1>
+
+  <div class="card">
+    <h2>{{ product.name }}</h2>
+
+    {% if product.image %}
+      <img src="{{ product.image.url|default:product.image }}" alt="{{ product.name }}" />
+    {% endif %}
+
+    <p>{{ product.description|default:"No description available." }}</p>
+
+    <p class="price">Final Price: ₵{{ listing.final_price }}</p>
+    <p class="small">Shared by {{ partner_name }}</p>
+
+    <a href="{{ deep_link }}" class="btn">Open in Kudiway App</a>
+  </div>
+
+  <footer>© {{ now|date:"Y" }} Kudiway — Smart Shopping, Smart Living</footer>
+</body>
+</html>

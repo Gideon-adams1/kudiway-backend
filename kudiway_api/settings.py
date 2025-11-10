@@ -8,7 +8,7 @@ from datetime import timedelta
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # ✅ loads .env variables
+load_dotenv()  # ✅ Load .env variables
 
 # -------------------------------------------------
 # Basic configuration
@@ -17,17 +17,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-fallback-secret-key")
 
-# 🚨 Always False in production
+# 🚨 Set DEBUG=False for production on Render
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = ["kudiway.com", "www.kudiway.com", "kudiway-backend.onrender.com", "kudiway-backend.onrender.com."]
-
+ALLOWED_HOSTS = [
+    "kudiway.com",
+    "www.kudiway.com",
+    "kudiway-backend.onrender.com",
+    "kudiway-backend.onrender.com.",
+    "localhost",
+    "127.0.0.1",
+]
 
 # -------------------------------------------------
 # Installed Apps
 # -------------------------------------------------
 INSTALLED_APPS = [
-    # Django default apps
+    # Django core apps
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -35,7 +41,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Third-party apps
+    # Third-party
     "rest_framework",
     "corsheaders",
     "django_crontab",
@@ -53,7 +59,7 @@ INSTALLED_APPS = [
 # Middleware
 # -------------------------------------------------
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",  # Must be first
+    "corsheaders.middleware.CorsMiddleware",  # must come first
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",  # for static files on Render
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -67,15 +73,16 @@ MIDDLEWARE = [
 ROOT_URLCONF = "kudiway_api.urls"
 
 # -------------------------------------------------
-# Templates
+# Templates (updated for referral landing page)
 # -------------------------------------------------
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
+        "DIRS": [BASE_DIR / "templates"],  # ✅ ensure templates folder recognized
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
+                "django.template.context_processors.debug",
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
@@ -107,7 +114,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # -------------------------------------------------
-# Django Q task queue
+# Django Q (background jobs)
 # -------------------------------------------------
 Q_CLUSTER = {
     "name": "DjangoQ",
@@ -129,24 +136,21 @@ USE_I18N = True
 USE_TZ = True
 
 # -------------------------------------------------
-# Static Files
+# Static & Media
 # -------------------------------------------------
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
-# -------------------------------------------------
-# Cloudinary Media Files
-# -------------------------------------------------
+# ✅ Cloudinary (media uploads)
 CLOUDINARY_STORAGE = {
     "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
     "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
     "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
 }
-
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 # -------------------------------------------------
-# REST Framework + JWT Authentication
+# REST Framework + JWT
 # -------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -166,7 +170,7 @@ SIMPLE_JWT = {
 }
 
 # -------------------------------------------------
-# CORS (for frontend & mobile)
+# CORS
 # -------------------------------------------------
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
@@ -189,9 +193,16 @@ LOGGING = {
 }
 
 # -------------------------------------------------
-# Render Deployment
+# Deployment / Security
 # -------------------------------------------------
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# ✅ Helps Render + HTTPS redirection
+CSRF_TRUSTED_ORIGINS = [
+    "https://kudiway.com",
+    "https://www.kudiway.com",
+    "https://kudiway-backend.onrender.com",
+]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
