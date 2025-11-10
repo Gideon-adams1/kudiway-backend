@@ -64,7 +64,8 @@ urlpatterns = [
     path("api/orders/", include("orders.urls")),
 
     # ✅ Clean referral link (short form)
-    path("r/<slug:ref_code>/", referral_redirect, name="referral_short"),
+   path('r/<slug:ref_code>/', order_views.referral_redirect, name='referral_short'),
+
 ]
 
 # ✅ Media files (images, KYC docs, etc.)
