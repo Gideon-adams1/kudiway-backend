@@ -122,7 +122,7 @@ class PartnerListing(models.Model):
             self.referral_code = uuid.uuid4().hex[:8]
 
         # 🌐 Construct referral URL
-        base_domain = "https://kudiwayapp.com"  # 🔁 replace with production domain if needed
+        base_domain = "https://kudiway.com"  # 🔁 replace with production domain if needed
         self.referral_url = f"{base_domain}/r/{self.referral_code}"
 
         super().save(*args, **kwargs)

@@ -316,3 +316,26 @@ def get_referral_product(request, ref_code):
         print("❌ Referral product error:", e)
         print(traceback.format_exc())
         return Response({"error": "Failed to load referral product."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+from django.shortcuts import render, redirect
+from django.http import HttpResponse
+from django.template import loader
+
+def referral_redirect(request, ref_code):
+    """
+    Handles browser visits to https://kudiway.com/r/<ref_code>
+    - Shows a simple landing page with product info and 'Open in Kudiway App' button.
+    - Automatically redirects to the mobile app deep link if opened on a phone.
+    """
+    try:
+        listing = PartnerListing.objects.select_related("product", "partner").get(referral_code=ref_code)
+        deep_link = f"kudiwayapp://r/{ref_code}"
+        context = {
+            "listing": listing,
+            "deep_link": deep_link,
+            "product": listing.product,
+            "partner_name": listing.partner.username,
+        }
+        template = loader.get_template("referral_landing.html")
+        return HttpResponse(template.render(context, request))
+    except PartnerListing.DoesNotExist:
+        return HttpResponse("<h2>Referral link not found or expired.</h2>", status=404)
