@@ -65,6 +65,7 @@ urlpatterns = [
 
     # ✅ Clean referral link (short form)
    path('r/<slug:ref_code>/', order_views.referral_redirect, name='referral_short'),
+   path('checkout/<slug:ref_code>/', order_views.referral_checkout, name='referral_checkout_page'),
 
 ]
 
