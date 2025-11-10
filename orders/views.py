@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.conf import settings
 from django.shortcuts import render
 from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -78,7 +79,7 @@ def get_product(request, pk):
 
 
 # ============================================================
-# 🧾 CREATE ORDER
+# 🧾 CREATE ORDER (App checkout)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -290,7 +291,7 @@ def get_partner_listings(request):
 
 
 # ============================================================
-# 🔗 REFERRAL PRODUCT (API JSON)
+# 🔗 REFERRAL PRODUCT (API JSON for the app)
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -313,8 +314,6 @@ def get_referral_product(request, ref_code):
 # ============================================================
 # 🌐 REFERRAL LANDING PAGE (WEB)
 # ============================================================
-@permission_classes([AllowAny])
-@api_view(["GET"])
 def referral_redirect(request, ref_code):
     """
     Handles browser visits to https://kudiway.com/r/<ref_code>
@@ -327,45 +326,106 @@ def referral_redirect(request, ref_code):
             "listing": listing,
             "product": product,
             "partner_name": listing.partner.username,
-            "deep_link": f"kudiway://product/{product.id}",
+            # must match your app Linking config: kudiwayapp://r/<code>
+            "deep_link": f"kudiwayapp://r/{ref_code}",
         }
         return render(request, "referral_landing.html", context)
     except PartnerListing.DoesNotExist:
-        return render(request, "404.html", {"message": "Referral link not found or expired."}, status=404)
+        return HttpResponse("<h2>Referral link not found or expired.</h2>", status=404)
     except Exception as e:
         print("❌ Referral redirect error:", e)
         print(traceback.format_exc())
-        return render(request, "500.html", {"message": "Server error."}, status=500)
-from django.views.decorators.csrf import csrf_exempt
+        return HttpResponse("<h2>Server error.</h2>", status=500)
 
-@csrf_exempt
+
+# ============================================================
+# 🧾 REFERRAL CHECKOUT (WEB) — saves Order + OrderItem
+# ============================================================
+def _get_or_create_guest_user() -> User:
+    """
+    Ensure we always have a user to attach Orders to.
+    Order.user is not nullable, so we use a shared 'guest_web' user.
+    """
+    guest, created = User.objects.get_or_create(
+        username="guest_web",
+        defaults={"first_name": "Guest", "last_name": "Checkout"},
+    )
+    return guest
+
+@csrf_exempt  # form posts from the public page (no CSRF token)
 def referral_checkout(request, ref_code):
     """
     Web checkout for buyers who visit referral link.
-    Allows them to fill name, phone, address and submit order.
+    Shows form (GET) and creates a pending Order (POST).
     """
     try:
         listing = PartnerListing.objects.select_related("product", "partner").get(referral_code=ref_code)
         product = listing.product
 
         if request.method == "POST":
-            name = request.POST.get("name")
-            phone = request.POST.get("phone")
-            address = request.POST.get("address")
+            name = (request.POST.get("name") or "").strip()
+            phone = (request.POST.get("phone") or "").strip()
+            address = (request.POST.get("address") or "").strip()
 
-            # Here you can later create an Order object or email confirmation
-            print(f"🛒 Checkout submission — {name}, {phone}, {address}")
+            if not name or not phone or not address:
+                # Re-render with error message
+                return render(
+                    request,
+                    "referral_checkout.html",
+                    {
+                        "product": product,
+                        "listing": listing,
+                        "partner_name": listing.partner.username,
+                        "error": "Please fill all fields to continue.",
+                    },
+                )
 
-            return render(request, "checkout_success.html", {
+            # 🧑‍🤝‍🧑 Attach to a 'guest' user so Order.user is not null
+            guest_user = _get_or_create_guest_user()
+
+            # Create a pending order (COD / manual follow-up)
+            order = Order.objects.create(
+                user=guest_user,
+                partner=listing.partner,  # if your Order model has this field
+                subtotal_amount=listing.final_price,
+                total_amount=listing.final_price,
+                payment_method="wallet",  # semantic placeholder
+                status="pending",
+                note=f"Web guest order — Name: {name}, Phone: {phone}, Address: {address}",
+            )
+
+            OrderItem.objects.create(
+                order=order,
+                product=product,
+                price=listing.final_price,
+                quantity=1,
+                product_name_snapshot=product.name,
+                product_image_snapshot=getattr(product.image, "url", ""),
+                partner=listing.partner,
+            )
+
+            # ⚠️ Do NOT increment total_profit yet; wait until you mark order paid/delivered.
+
+            # 🎉 Show confirmation page
+            return render(
+                request,
+                "order_confirmed.html",
+                {"product": product, "customer_name": name},
+            )
+
+        # GET → initial form
+        return render(
+            request,
+            "referral_checkout.html",
+            {
                 "product": product,
                 "listing": listing,
-                "name": name,
-            })
-
-        return render(request, "referral_checkout.html", {
-            "product": product,
-            "listing": listing,
-            "partner_name": listing.partner.username,
-        })
+                "partner_name": listing.partner.username,
+            },
+        )
     except PartnerListing.DoesNotExist:
         return HttpResponse("<h2>Referral not found or expired.</h2>", status=404)
+    except Exception as e:
+        print("❌ referral_checkout error:", e)
+        print(traceback.format_exc())
+        return HttpResponse("<h2>Server error.</h2>", status=500)
