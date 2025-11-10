@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from django.conf import settings
 from django.shortcuts import render
+from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -335,3 +336,36 @@ def referral_redirect(request, ref_code):
         print("❌ Referral redirect error:", e)
         print(traceback.format_exc())
         return render(request, "500.html", {"message": "Server error."}, status=500)
+from django.views.decorators.csrf import csrf_exempt
+
+@csrf_exempt
+def referral_checkout(request, ref_code):
+    """
+    Web checkout for buyers who visit referral link.
+    Allows them to fill name, phone, address and submit order.
+    """
+    try:
+        listing = PartnerListing.objects.select_related("product", "partner").get(referral_code=ref_code)
+        product = listing.product
+
+        if request.method == "POST":
+            name = request.POST.get("name")
+            phone = request.POST.get("phone")
+            address = request.POST.get("address")
+
+            # Here you can later create an Order object or email confirmation
+            print(f"🛒 Checkout submission — {name}, {phone}, {address}")
+
+            return render(request, "checkout_success.html", {
+                "product": product,
+                "listing": listing,
+                "name": name,
+            })
+
+        return render(request, "referral_checkout.html", {
+            "product": product,
+            "listing": listing,
+            "partner_name": listing.partner.username,
+        })
+    except PartnerListing.DoesNotExist:
+        return HttpResponse("<h2>Referral not found or expired.</h2>", status=404)

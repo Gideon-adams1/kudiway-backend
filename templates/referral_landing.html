@@ -84,10 +84,22 @@
       border-radius: 10px;
       text-decoration: none;
       transition: background 0.25s ease;
+      width: 85%;
+      max-width: 320px;
     }
 
     .btn:hover {
       background: #FFC300;
+    }
+
+    .btn-secondary {
+      background: #0077B6;
+      color: white;
+      margin-top: 10px;
+    }
+
+    .btn-secondary:hover {
+      background: #023E8A;
     }
 
     .small {
@@ -139,7 +151,11 @@
     <p class="price">Price: ₵{{ listing.final_price }}</p>
     <p class="small">Shared by {{ partner_name }}</p>
 
-    <a href="{{ deep_link }}" class="btn">Open in Kudiway App</a>
+    <!-- 🟡 Proceed to Checkout -->
+    <a href="/checkout/{{ listing.referral_code }}/" class="btn">🛒 Proceed to Checkout</a>
+
+    <!-- 🔵 Open in App -->
+    <a href="{{ deep_link }}" class="btn btn-secondary">📱 Open in Kudiway App</a>
   </div>
 
   <footer>© {{ now|date:"Y" }} Kudiway — Smart Shopping, Smart Living</footer>

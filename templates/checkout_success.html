@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Confirmed | Kudiway</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, #0077B6, #00B4D8);
+      color: white;
+      text-align: center;
+      padding: 60px 15px;
+      margin: 0;
+    }
+
+    .card {
+      background: white;
+      color: #222;
+      border-radius: 16px;
+      padding: 30px;
+      max-width: 400px;
+      margin: 40px auto;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    }
+
+    h1 {
+      color: #0077B6;
+    }
+
+    .btn {
+      display: inline-block;
+      background: #FFD60A;
+      color: #111;
+      padding: 12px 20px;
+      margin-top: 20px;
+      font-weight: 700;
+      border-radius: 10px;
+      text-decoration: none;
+    }
+
+    .btn:hover {
+      background: #FFC300;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>🎉 Order Confirmed!</h1>
+    <p>Thank you, {{ name }}. Your order for <strong>{{ product.name }}</strong> has been received.</p>
+    <p>We’ll contact you soon for delivery arrangements.</p>
+
+    <a href="https://kudiway.com" class="btn">Return to Store</a>
+  </div>
+</body>
+</html>

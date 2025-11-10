@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Checkout | {{ product.name }} - Kudiway</title>
+
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, #0077B6, #00B4D8);
+      color: white;
+      text-align: center;
+      padding: 30px 15px;
+      margin: 0;
+    }
+
+    .card {
+      background: #fff;
+      color: #222;
+      border-radius: 18px;
+      padding: 25px;
+      max-width: 420px;
+      margin: 30px auto;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+      text-align: left;
+    }
+
+    h1 {
+      text-align: center;
+      color: #0077B6;
+    }
+
+    img {
+      width: 100%;
+      border-radius: 10px;
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      font-size: 15px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      background: #FFD60A;
+      color: #111;
+      padding: 14px;
+      font-weight: 700;
+      border: none;
+      border-radius: 10px;
+      margin-top: 20px;
+      cursor: pointer;
+      transition: background 0.3s ease;
+      text-align: center;
+    }
+
+    .btn:hover {
+      background: #FFC300;
+    }
+
+    .price {
+      text-align: center;
+      font-size: 20px;
+      font-weight: 700;
+      color: #0077B6;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>{{ product.name }}</h1>
+    {% if product.image %}
+      <img src="{{ product.image.url|default:product.image }}" alt="{{ product.name }}">
+    {% endif %}
+
+    <p>{{ product.description|default:"No description available." }}</p>
+    <p class="price">Total: ₵{{ listing.final_price }}</p>
+
+    <form method="post">
+      {% csrf_token %}
+      <label for="name">Full Name</label>
+      <input type="text" id="name" name="name" required>
+
+      <label for="phone">Phone Number</label>
+      <input type="text" id="phone" name="phone" required>
+
+      <label for="address">Delivery Address</label>
+      <textarea id="address" name="address" rows="3" required></textarea>
+
+      <button type="submit" class="btn">✅ Confirm Purchase</button>
+    </form>
+  </div>
+</body>
+</html>
