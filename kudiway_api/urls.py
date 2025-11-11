@@ -41,14 +41,13 @@ urlpatterns = [
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api-auth/", include("rest_framework.urls")),
 
-
     # ✅ Wallet Core
     path("api/wallet/summary/", wallet_views.wallet_summary, name="wallet_summary"),
     path("api/wallet/deposit/", wallet_views.deposit, name="deposit"),
     path("api/wallet/transfer-to-savings/", wallet_views.deposit_to_savings, name="deposit_to_savings"),
     path("api/wallet/withdraw/", wallet_views.withdraw_from_savings, name="withdraw_from_savings"),
     path("api/wallet/transactions/", wallet_views.transaction_history, name="transaction_history"),
-    path('api/wallet/', include('kudiwallet.urls')),
+    path("api/wallet/", include("kudiwallet.urls")),
 
     # ✅ Credit / BNPL routes
     path("api/wallet/credit-purchase/", wallet_views.make_credit_purchase, name="credit_purchase"),
@@ -63,13 +62,17 @@ urlpatterns = [
     path("api/kyc/approve/<int:kyc_id>/", wallet_views.approve_kyc_admin, name="approve_kyc_admin"),
     path("api/kyc/reject/<int:kyc_id>/", wallet_views.reject_kyc_admin, name="reject_kyc_admin"),
 
+    # ✅ MoMo Payment Integration
+    path("api/wallet/momo-pay/", wallet_views.momo_payment_request, name="momo_payment_request"),
+    path("api/wallet/momo-status/<str:reference_id>/", wallet_views.momo_payment_status, name="momo_payment_status"),
+    path("api/wallet/momo-callback/", wallet_views.momo_callback, name="momo_callback"),
+
     # ✅ Orders & Store routes
     path("api/orders/", include("orders.urls")),
 
     # ✅ Clean referral link (short form)
-   path('r/<slug:ref_code>/', order_views.referral_redirect, name='referral_short'),
-   path('checkout/<slug:ref_code>/', order_views.referral_checkout, name='referral_checkout_page'),
-
+    path("r/<slug:ref_code>/", order_views.referral_redirect, name="referral_short"),
+    path("checkout/<slug:ref_code>/", order_views.referral_checkout, name="referral_checkout_page"),
 ]
 
 # ✅ Media files (images, KYC docs, etc.)
