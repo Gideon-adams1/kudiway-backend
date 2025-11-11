@@ -2,7 +2,7 @@ from decimal import Decimal, InvalidOperation
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -497,5 +497,47 @@ def momo_payment_status(request, reference_id):
     try:
         result = check_payment_status(reference_id, api_key="85726dae4e4347ca8938faa71eacaa1d")
         return Response(result)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+# ============================================================
+# 📲 MOMO PAYMENT CALLBACK (Webhook)
+# ============================================================
+@api_view(["POST"])
+@permission_classes([AllowAny])  # MTN will call this, not your logged-in user
+def momo_callback(request):
+    """
+    MTN will call this endpoint when payment completes (sandbox simulation).
+    Expected payload example:
+    {
+        "reference_id": "uuid-string",
+        "status": "SUCCESSFUL",
+        "amount": "5",
+        "payer": {"partyId": "46733123453"}
+    }
+    """
+    try:
+        data = request.data
+        reference_id = data.get("reference_id")
+        status = data.get("status")
+        amount = Decimal(data.get("amount", "0"))
+        payer_phone = data.get("payer", {}).get("partyId", "unknown")
+
+        print(f"📩 MoMo Callback received for {reference_id}: {status}")
+
+        # Only act on successful payments
+        if status == "SUCCESSFUL":
+            # Find the user (basic example – you can improve mapping)
+            from django.contrib.auth.models import User
+            user = User.objects.first()  # placeholder: pick first user for now
+            wallet, _ = Wallet.objects.get_or_create(user=user)
+
+            wallet.balance += amount
+            wallet.save()
+
+            log_transaction(user, "deposit", amount, f"MoMo payment from {payer_phone}")
+            return Response({"message": f"Wallet credited ₵{amount} for {payer_phone}"}, status=200)
+
+        return Response({"message": f"Payment {status}, no action taken."}, status=200)
+
     except Exception as e:
         return Response({"error": str(e)}, status=500)
