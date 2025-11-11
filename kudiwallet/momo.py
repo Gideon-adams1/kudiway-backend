@@ -5,6 +5,7 @@
 import requests
 import uuid
 import urllib3
+import base64
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -15,6 +16,7 @@ CALLBACK_URL = "https://kudiway.com/momo/callback/"
 BASE_URL = "https://sandbox.momodeveloper.mtn.com"
 TARGET_ENV = "sandbox"
 
+
 # ------------------------------------------------------------
 # 🧾 Generate Access Token
 # ------------------------------------------------------------
@@ -23,16 +25,16 @@ def get_access_token(api_key: str) -> str:
     url = f"{BASE_URL}/collection/token/"
     headers = {
         "Ocp-Apim-Subscription-Key": SUBSCRIPTION_KEY,
-        "Authorization": f"Basic {requests.utils.to_native_string(uuid.uuid4())}",  # placeholder
     }
+
     # ✅ Real Authorization header
-    import base64
     basic = base64.b64encode(f"{API_USER_ID}:{api_key}".encode()).decode()
     headers["Authorization"] = f"Basic {basic}"
 
     print("🔐 Requesting MoMo access token...")
     resp = requests.post(url, headers=headers, verify=False)
     if resp.status_code == 200:
+        print("✅ Access token obtained successfully!")
         return resp.json().get("access_token")
     else:
         print("⚠️ Failed to obtain access token:", resp.text)
@@ -42,7 +44,7 @@ def get_access_token(api_key: str) -> str:
 # ------------------------------------------------------------
 # 💰 Request a Payment from User
 # ------------------------------------------------------------
-def request_payment(amount, phone, api_key, reference_id=None):
+def request_payment(amount: str, phone: str, external_id="KudiPayTxn123", api_key=None, reference_id=None):
     """Request payment from user’s MoMo wallet"""
     if api_key is None:
         print("⚠️ API Key required for payment request")
@@ -53,11 +55,14 @@ def request_payment(amount, phone, api_key, reference_id=None):
         print("❌ Could not obtain access token")
         return None
 
-    ref_id = str(uuid.uuid4())
+    # ✅ Generate a new reference_id if not provided
+    if reference_id is None:
+        reference_id = str(uuid.uuid4())
+
     url = f"{BASE_URL}/collection/v1_0/requesttopay"
     headers = {
         "Authorization": f"Bearer {token}",
-        "X-Reference-Id": ref_id,
+        "X-Reference-Id": reference_id,
         "X-Target-Environment": TARGET_ENV,
         "Ocp-Apim-Subscription-Key": SUBSCRIPTION_KEY,
         "Content-Type": "application/json",
@@ -76,8 +81,11 @@ def request_payment(amount, phone, api_key, reference_id=None):
     print("Response:", resp.status_code, resp.text)
 
     if resp.status_code == 202:
-        return {"reference_id": ref_id, "status": "pending"}
-    return {"error": resp.text}
+        print(f"✅ Payment request accepted! Reference ID: {reference_id}")
+        return {"reference_id": reference_id, "status": "pending"}
+    else:
+        print("❌ Payment request failed:", resp.text)
+        return {"error": resp.text}
 
 
 # ------------------------------------------------------------
@@ -95,8 +103,13 @@ def check_payment_status(reference_id: str, api_key: str):
         "X-Target-Environment": TARGET_ENV,
         "Ocp-Apim-Subscription-Key": SUBSCRIPTION_KEY,
     }
+
+    print(f"🔍 Checking status for Reference ID: {reference_id}")
     resp = requests.get(url, headers=headers, verify=False)
     try:
-        return resp.json()
+        result = resp.json()
+        print("Response:", result)
+        return result
     except Exception:
+        print("⚠️ Invalid JSON in response:", resp.text)
         return {"error": resp.text}
