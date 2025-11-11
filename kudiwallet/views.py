@@ -506,38 +506,39 @@ def momo_payment_status(request, reference_id):
 @permission_classes([AllowAny])  # MTN will call this, not your logged-in user
 def momo_callback(request):
     """
-    MTN will call this endpoint when payment completes (sandbox simulation).
-    Expected payload example:
-    {
-        "reference_id": "uuid-string",
-        "status": "SUCCESSFUL",
-        "amount": "5",
-        "payer": {"partyId": "46733123453"}
-    }
+    MTN MoMo callback handler:
+    - Updates wallet balance
+    - Logs the transaction
     """
     try:
         data = request.data
         reference_id = data.get("reference_id")
         status = data.get("status")
         amount = Decimal(data.get("amount", "0"))
-        payer_phone = data.get("payer", {}).get("partyId", "unknown")
+        payer = data.get("payer", {}).get("partyId")
 
         print(f"📩 MoMo Callback received for {reference_id}: {status}")
 
-        # Only act on successful payments
         if status == "SUCCESSFUL":
-            # Find the user (basic example – you can improve mapping)
-            from django.contrib.auth.models import User
-            user = User.objects.first()  # placeholder: pick first user for now
-            wallet, _ = Wallet.objects.get_or_create(user=user)
-
+            wallet = Wallet.objects.first()  # Later: match to user via payer
             wallet.balance += amount
             wallet.save()
 
-            log_transaction(user, "deposit", amount, f"MoMo payment from {payer_phone}")
-            return Response({"message": f"Wallet credited ₵{amount} for {payer_phone}"}, status=200)
+            # ✅ Log transaction
+            log_transaction(
+                wallet.user,
+                transaction_type="deposit",
+                amount=amount,
+                description=f"MTN MoMo payment from {payer}",
+            )
 
-        return Response({"message": f"Payment {status}, no action taken."}, status=200)
+            return Response({
+                "message": f"Wallet credited ₵{amount} for {payer}",
+                "reference_id": reference_id
+            })
+
+        return Response({"message": "Payment pending or failed"}, status=200)
 
     except Exception as e:
+        print("❌ MoMo Callback error:", str(e))
         return Response({"error": str(e)}, status=500)
