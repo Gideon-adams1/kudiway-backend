@@ -46,6 +46,7 @@ urlpatterns = [
     path("api/wallet/transfer-to-savings/", wallet_views.deposit_to_savings, name="deposit_to_savings"),
     path("api/wallet/withdraw/", wallet_views.withdraw_from_savings, name="withdraw_from_savings"),
     path("api/wallet/transactions/", wallet_views.transaction_history, name="transaction_history"),
+    path('api/wallet/', include('kudiwallet.urls')),
 
     # ✅ Credit / BNPL routes
     path("api/wallet/credit-purchase/", wallet_views.make_credit_purchase, name="credit_purchase"),
