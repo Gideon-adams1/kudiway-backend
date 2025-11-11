@@ -27,6 +27,8 @@ ALLOWED_HOSTS = [
     "kudiway-backend.onrender.com.",
     "localhost",
     "127.0.0.1",
+    "*", 
+    "testserver",
 ]
 
 # -------------------------------------------------
