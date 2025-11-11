@@ -16,7 +16,7 @@ urlpatterns = [
 
     # 💳 Credit features
     path("credit-purchase/", api.CreditPurchaseView.as_view(), name="credit-purchase"),
-    path("borrow/", views.borrow_credit, name="borrow_credit"),
+    path("borrow/", views.make_credit_purchase, name="make_credit_purchase"),
     path("repay/", api.RepayCreditView.as_view(), name="repay_credit"),
     path("credit-score/", views.get_credit_score, name="get_credit_score"),
     path("request-limit-increase/", views.request_limit_increase, name="request_limit_increase"),
