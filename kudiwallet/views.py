@@ -5,13 +5,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework import status
-import uuid  # ✅ added for generating MoMo reference IDs
 
 from .models import Wallet, Transaction, KYC, CreditPurchase
 from .serializers import TransactionSerializer, KYCSerializer
 
 # ✅ Import MoMo helper functions
 from .momo import request_payment, check_payment_status
+import uuid  # ✅ added for MoMo reference ID generation
+
 
 
 # ============================================================
@@ -236,6 +237,7 @@ def repay_credit(request):
     Repayment logic:
     - 5% simple interest calculated on outstanding principal at time of payment
     - +1% penalty per full week overdue (on principal)
+    - Reduces wallet balance and credit_balance; updates credit score
     """
     try:
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
@@ -266,9 +268,11 @@ def repay_credit(request):
                 purchase.save()
                 continue
 
+            # Interest on current principal
             interest = (principal_due * Decimal("0.05")).quantize(Decimal("0.01"))
-            penalty = Decimal("0.00")
 
+            # Penalty if overdue (per full week)
+            penalty = Decimal("0.00")
             if today > purchase.due_date:
                 weeks_overdue = (today - purchase.due_date).days // 7
                 if weeks_overdue > 0:
@@ -317,6 +321,139 @@ def repay_credit(request):
 
 
 # ============================================================
+# 📦 GET ACTIVE CREDIT PURCHASES
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def credit_purchase_list(request):
+    purchases = CreditPurchase.objects.filter(user=request.user, is_paid=False)
+    today = timezone.now().date()
+    results = []
+    for p in purchases:
+        overdue_days = (today - p.due_date).days
+        overdue_weeks = max(0, overdue_days // 7)
+        penalty_rate_multiplier = (Decimal("1.00") + (Decimal("0.01") * overdue_weeks))
+        total_due_preview = (p.remaining_amount * penalty_rate_multiplier).quantize(Decimal("0.01"))
+        results.append({
+            "item_name": p.item_name,
+            "remaining_amount": str(p.remaining_amount),
+            "due_date": p.due_date.isoformat(),
+            "overdue_weeks": overdue_weeks,
+            "penalty_multiplier": str(penalty_rate_multiplier),
+            "total_due_preview": str(total_due_preview),
+            "is_paid": p.is_paid,
+            "status": p.status,
+        })
+    return Response(results)
+
+
+# ============================================================
+# 🧮 GET CREDIT SCORE + LIMIT
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_credit_score(request):
+    wallet, _ = Wallet.objects.get_or_create(user=request.user)
+    return Response({
+        "credit_score": wallet.credit_score,
+        "credit_limit": str(wallet.credit_limit),
+        "credit_balance": str(wallet.credit_balance),
+    })
+
+
+# ============================================================
+# 🚀 REQUEST LIMIT INCREASE
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def request_limit_increase(request):
+    wallet, _ = Wallet.objects.get_or_create(user=request.user)
+    if wallet.credit_score < 700:
+        return Response(
+            {"error": "Credit score too low for limit increase."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    wallet.credit_limit *= Decimal("1.2")
+    wallet.save()
+    log_transaction(request.user, "limit_increase", 0, f"Credit limit raised to ₵{wallet.credit_limit:.2f}")
+    return Response({"message": f"🎉 Credit limit increased to ₵{wallet.credit_limit:.2f}!"}, status=200)
+
+
+# ============================================================
+# 📜 TRANSACTION HISTORY
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def transaction_history(request):
+    transactions = Transaction.objects.filter(user=request.user).order_by("-timestamp")[:30]
+    serializer = TransactionSerializer(transactions, many=True)
+    return Response(serializer.data)
+
+
+# ============================================================
+# 🪪 KYC UPLOAD & STATUS
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def upload_kyc(request):
+    try:
+        kyc, _ = KYC.objects.get_or_create(user=request.user)
+        data = request.data
+        kyc.full_name = data.get("full_name", kyc.full_name)
+        kyc.id_type = data.get("id_type", kyc.id_type)
+        kyc.id_number = data.get("id_number", kyc.id_number)
+        for field in ["id_front", "id_back", "selfie"]:
+            if field in request.FILES:
+                setattr(kyc, field, request.FILES[field])
+        kyc.status = "Pending"
+        kyc.save()
+        return Response({"message": "KYC submitted successfully.", "status": kyc.status})
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_kyc_status(request):
+    try:
+        kyc = KYC.objects.get(user=request.user)
+        serializer = KYCSerializer(kyc)
+        return Response(serializer.data)
+    except KYC.DoesNotExist:
+        return Response({"status": "Not submitted"})
+
+
+# ============================================================
+# 🧑🏽‍💼 ADMIN KYC APPROVAL
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def approve_kyc_admin(request, kyc_id):
+    try:
+        kyc = KYC.objects.get(id=kyc_id)
+        kyc.status = "Approved"
+        kyc.reviewed_at = timezone.now()
+        kyc.save()
+        return Response({"message": f"KYC for {kyc.user.username} approved."})
+    except KYC.DoesNotExist:
+        return Response({"error": "KYC not found."}, status=404)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def reject_kyc_admin(request, kyc_id):
+    try:
+        kyc = KYC.objects.get(id=kyc_id)
+        kyc.status = "Rejected"
+        kyc.remarks = request.data.get("remarks", "")
+        kyc.reviewed_at = timezone.now()
+        kyc.save()
+        return Response({"message": f"KYC for {kyc.user.username} rejected."})
+    except KYC.DoesNotExist:
+        return Response({"error": "KYC not found."}, status=404)
+
+
+# ============================================================
 # 💳 MOMO PAYMENT INTEGRATION
 # ============================================================
 @api_view(["POST"])
@@ -337,16 +474,15 @@ def momo_payment_request(request):
         if not amount or not phone:
             return Response({"error": "Amount and phone are required."}, status=400)
 
-        # ✅ FIXED: generate UUID string for the reference
+        # ✅ Generate proper UUID reference string
         reference_id = str(uuid.uuid4())
 
         result = request_payment(amount, phone, reference_id=reference_id, api_key="85726dae4e4347ca8938faa71eacaa1d")
 
         if "error" in result:
             return Response(result, status=400)
-
         return Response({
-            "message": "Payment request accepted",
+            "message": "Payment request sent successfully.",
             "reference_id": reference_id,
             "details": result
         }, status=202)
