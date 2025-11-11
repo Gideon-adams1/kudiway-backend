@@ -42,7 +42,7 @@ def get_access_token(api_key: str) -> str:
 # ------------------------------------------------------------
 # 💰 Request a Payment from User
 # ------------------------------------------------------------
-def request_payment(amount: str, phone: str, external_id="KudiPayTxn123", api_key=None):
+def request_payment(amount, phone, api_key, reference_id=None):
     """Request payment from user’s MoMo wallet"""
     if api_key is None:
         print("⚠️ API Key required for payment request")
