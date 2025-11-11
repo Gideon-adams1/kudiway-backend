@@ -9,6 +9,10 @@ from rest_framework import status
 from .models import Wallet, Transaction, KYC, CreditPurchase
 from .serializers import TransactionSerializer, KYCSerializer
 
+# ✅ Import MoMo helper functions
+from .momo import request_payment, check_payment_status
+
+
 # ============================================================
 # 💰 TRANSACTION UTIL
 # ============================================================
@@ -172,22 +176,17 @@ def make_credit_purchase(request):
         if wallet.balance < down_payment:
             return Response({"error": "Insufficient wallet funds for downpayment."}, status=400)
 
-        # Compute financed principal (interest applied later during repayment)
         credit_principal = (amount - down_payment).quantize(Decimal("0.01"))
         if credit_principal <= 0:
             return Response({"error": "Down payment cannot cover full amount for BNPL."}, status=400)
 
-        # Check credit limit on principal only (not including interest)
         if wallet.credit_balance + credit_principal > wallet.credit_limit:
             return Response({"error": "Credit limit exceeded."}, status=400)
 
-        # Deduct downpayment now
         wallet.balance -= down_payment
-        # Add principal to credit balance (interest added during repay flow)
         wallet.credit_balance += credit_principal
         wallet.save()
 
-        # Create purchase (due_date is a DateField)
         due_date = (timezone.now().date() + timedelta(days=14))
         purchase = CreditPurchase.objects.create(
             user=request.user,
@@ -203,11 +202,9 @@ def make_credit_purchase(request):
             is_paid=False,
         )
 
-        # Log transactions
         log_transaction(request.user, "credit_purchase", credit_principal, f"BNPL principal for {item_name}")
         log_transaction(request.user, "withdraw", down_payment, f"Down payment for {item_name}")
 
-        # For the UI, also show the interest that will apply at repay-time
         interest_preview = (credit_principal * Decimal("0.05")).quantize(Decimal("0.01"))
         total_due_preview = (credit_principal + interest_preview).quantize(Decimal("0.01"))
 
@@ -282,7 +279,6 @@ def repay_credit(request):
             total_due_now = (principal_due + interest + penalty).quantize(Decimal("0.01"))
 
             if remaining_payment >= total_due_now:
-                # Full settlement of this purchase
                 remaining_payment -= total_due_now
                 wallet.credit_balance -= principal_due
                 purchase.remaining_amount = Decimal("0.00")
@@ -290,7 +286,6 @@ def repay_credit(request):
                 purchase.status = "PAID"
                 wallet.credit_score = min(wallet.credit_score + 10, 1000)
             else:
-                # Partial payment — allocate proportionally to principal
                 fraction = (remaining_payment / total_due_now)
                 principal_paid = (principal_due * fraction).quantize(Decimal("0.01"))
                 purchase.remaining_amount = (principal_due - principal_paid).quantize(Decimal("0.01"))
@@ -302,7 +297,6 @@ def repay_credit(request):
             total_interest_charged += interest
             total_penalty_charged += penalty
 
-        # Deduct from wallet now
         wallet.balance -= amount
         wallet.save()
 
@@ -330,7 +324,6 @@ def repay_credit(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def credit_purchase_list(request):
-    """Returns all active (unpaid) credit purchases with simple overdue penalty preview."""
     purchases = CreditPurchase.objects.filter(user=request.user, is_paid=False)
     today = timezone.now().date()
     results = []
@@ -456,3 +449,44 @@ def reject_kyc_admin(request, kyc_id):
         return Response({"message": f"KYC for {kyc.user.username} rejected."})
     except KYC.DoesNotExist:
         return Response({"error": "KYC not found."}, status=404)
+
+
+# ============================================================
+# 💳 MOMO PAYMENT INTEGRATION
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def momo_payment_request(request):
+    """
+    Request payment from user's MoMo wallet.
+    Example body:
+    {
+        "amount": 5,
+        "phone": "46733123453"
+    }
+    """
+    try:
+        amount = request.data.get("amount")
+        phone = request.data.get("phone")
+
+        if not amount or not phone:
+            return Response({"error": "Amount and phone are required."}, status=400)
+
+        result = request_payment(amount, phone, api_key="85726dae4e4347ca8938faa71eacaa1d")
+
+        if "error" in result:
+            return Response(result, status=400)
+        return Response(result, status=202)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def momo_payment_status(request, reference_id):
+    """Check status of a specific MoMo transaction"""
+    try:
+        result = check_payment_status(reference_id, api_key="85726dae4e4347ca8938faa71eacaa1d")
+        return Response(result)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)

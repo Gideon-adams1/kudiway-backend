@@ -14,7 +14,6 @@ urlpatterns = [
     path("transactions/", views.transaction_history, name="transaction_history"),
     path("credit-purchase/", views.credit_purchase_list, name="credit_purchase_list"),
 
-
     # 💳 Credit features
     path("credit-purchase/", api.CreditPurchaseView.as_view(), name="credit-purchase"),
     path("borrow/", views.borrow_credit, name="borrow_credit"),
@@ -27,4 +26,8 @@ urlpatterns = [
     path("status/", views.get_kyc_status, name="get_kyc_status"),
     path("approve_kyc/<int:kyc_id>/", views.approve_kyc_admin, name="approve_kyc_admin"),
     path("reject_kyc/<int:kyc_id>/", views.reject_kyc_admin, name="reject_kyc_admin"),
+
+    # 💳 MoMo Payment Integration
+    path("momo-pay/", views.momo_payment_request, name="momo_payment_request"),
+    path("momo-status/<str:reference_id>/", views.momo_payment_status, name="momo_payment_status"),
 ]
