@@ -158,11 +158,6 @@ class KYC(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.status}"
 # --- MoMo callback log ---
-from django.db import models
-from django.contrib.auth.models import User
-from django.utils import timezone
-from decimal import Decimal
-
 # ✅ Logs every MoMo callback that hits your system
 class MomoCallbackLog(models.Model):
     reference_id = models.CharField(max_length=100)
