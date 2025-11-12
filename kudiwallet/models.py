@@ -15,6 +15,8 @@ class Wallet(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     credit_limit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("500.00"))
     credit_score = models.PositiveIntegerField(default=600)
+    phone_number = models.CharField(max_length=10, blank=True, null=True, unique=True)
+
 
     def __str__(self):
         return f"{self.user.username}'s Wallet"
