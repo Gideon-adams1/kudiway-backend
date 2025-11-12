@@ -160,27 +160,30 @@ class KYC(models.Model):
 # --- MoMo callback log ---
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
+from decimal import Decimal
 
+# ✅ Logs every MoMo callback that hits your system
 class MomoCallbackLog(models.Model):
-    reference_id = models.CharField(max_length=100, db_index=True)
-    status = models.CharField(max_length=40)
-    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    payer_id = models.CharField(max_length=32, blank=True, null=True)
+    reference_id = models.CharField(max_length=100)
+    status = models.CharField(max_length=50)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    payer_id = models.CharField(max_length=50)
     raw = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         return f"{self.reference_id} - {self.status}"
-class Notification(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
-    title = models.CharField(max_length=120)
-    body = models.TextField(blank=True)
-    data = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    delivered = models.BooleanField(default=False)
 
-    class Meta:
-        ordering = ("-created_at",)
+
+# ✅ In-app notification system (for wallet events)
+class Notification(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    delivered = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user.username}: {self.title}"
