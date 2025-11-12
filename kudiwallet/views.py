@@ -503,56 +503,81 @@ def momo_payment_status(request, reference_id):
 # 📲 MOMO PAYMENT CALLBACK (Webhook)
 # ============================================================
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([AllowAny])  # MTN will call this
 def momo_callback(request):
-    """
-    MTN MoMo callback handler:
-    - Matches payer's phone to user wallet
-    - Updates that wallet balance
-    - Logs the transaction
-    """
-    try:
-        data = request.data
-        reference_id = data.get("reference_id")
-        status = data.get("status")
-        amount = Decimal(data.get("amount", "0"))
-        payer = data.get("payer", {}).get("partyId")
+    payload = request.data if hasattr(request, "data") else {}
+    reference_id = payload.get("reference_id")
+    status = payload.get("status")
+    amount = payload.get("amount")
+    payer = payload.get("payer", {})
+    payer_id = payer.get("partyId")
 
-        print(f"📩 MoMo Callback received for {reference_id}: {status} | Payer: {payer}")
+    print(f"📩 MoMo Callback received for {reference_id}: {status}")
 
-        if status == "SUCCESSFUL":
-            # Normalize phone number (remove + or spaces)
-            normalized_phone = payer.strip().replace("+", "").replace(" ", "")
+    # --- 1) Log the webhook ---
+    from .models import MomoCallbackLog, Wallet, Notification
+    MomoCallbackLog.objects.create(
+        reference_id=reference_id or "",
+        status=status or "",
+        amount=amount or 0,
+        payer_id=payer_id or "",
+        raw=payload,
+    )
 
-            # Try to find the wallet for this phone number
-            wallet = Wallet.objects.filter(phone_number=normalized_phone).first()
-
+    # --- 2) Credit wallet & log transaction when SUCCESSFUL ---
+    if status == "SUCCESSFUL" and amount and payer_id:
+        try:
+            wallet = Wallet.objects.filter(phone_number=payer_id).first()
             if wallet:
-                wallet.balance += amount
+                from decimal import Decimal
+                wallet.balance += Decimal(str(amount))
                 wallet.save()
+                log_transaction(wallet.user, "deposit", Decimal(str(amount)), f"MoMo payment from {payer_id}")
 
-                # Log transaction
-                log_transaction(
-                    wallet.user,
-                    transaction_type="deposit",
-                    amount=amount,
-                    description=f"MoMo payment from {normalized_phone}",
+                # 3) Create in-app Notification
+                Notification.objects.create(
+                    user=wallet.user,
+                    title="MoMo Payment Received",
+                    body=f"You just received ₵{amount} from {payer_id}.",
+                    data={"reference_id": reference_id, "amount": amount, "payer_id": payer_id},
                 )
 
-                return Response({
-                    "message": f"Wallet credited ₵{amount} for {normalized_phone}",
-                    "user": wallet.user.username,
-                    "reference_id": reference_id
-                })
+                # 4) Email + SMS (best effort)
+                send_email_notification(
+                    getattr(wallet.user, "email", None),
+                    "MoMo payment received",
+                    f"Hi {wallet.user.username},\n\nWe received ₵{amount} from {payer_id}. Your new balance is ₵{wallet.balance}.\n\n— Kudiway"
+                )
+                # If you set TWILIO_* in settings and wallet.user.profile has e164 phone, call:
+                # send_sms_notification(wallet.user.profile.phone_e164, f"Kudiway: Received ₵{amount}. Balance: ₵{wallet.balance}")
+
+                return Response({"message": f"Wallet credited ₵{amount} for {payer_id}"})
             else:
-                print(f"⚠️ No wallet found for {normalized_phone}")
-                return Response(
-                    {"error": f"No wallet linked to {normalized_phone}"},
-                    status=404
-                )
+                return Response({"error": f"No wallet found for payer {payer_id}"}, status=404)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
-        return Response({"message": "Payment pending or failed"}, status=200)
+    return Response({"message": "Callback received"})
 
-    except Exception as e:
-        print("❌ MoMo Callback error:", str(e))
-        return Response({"error": str(e)}, status=500)
+from .models import Notification, MomoCallbackLog
+from .serializers import NotificationSerializer
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from .notifier import send_email_notification, send_sms_notification
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_notifications(request):
+    qs = Notification.objects.filter(user=request.user).order_by("-created_at")[:50]
+    return Response(NotificationSerializer(qs, many=True).data)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ack_notifications(request):
+    """
+    Body: {"ids": [1,2,3]}
+    """
+    ids = request.data.get("ids", [])
+    if not isinstance(ids, list):
+        return Response({"error": "ids must be a list"}, status=400)
+    Notification.objects.filter(user=request.user, id__in=ids).update(delivered=True)
+    return Response({"message": "Acknowledged"})

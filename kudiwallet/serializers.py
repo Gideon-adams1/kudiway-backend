@@ -64,3 +64,10 @@ class CreditPurchaseSerializer(serializers.ModelSerializer):
     def get_total_due(self, obj):
         """Calculate total amount owed (includes 5% interest and 1% penalty if overdue)."""
         return obj.total_due()
+from rest_framework import serializers
+from .models import Notification
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ["id", "title", "body", "data", "created_at", "delivered"]

@@ -30,4 +30,13 @@ urlpatterns = [
     # 💳 MoMo Payment Integration
     path("momo-pay/", views.momo_payment_request, name="momo_payment_request"),
     path("momo-status/<str:reference_id>/", views.momo_payment_status, name="momo_payment_status"),
+    path("momo-callback/", views.momo_callback, name="momo_callback"),
+]
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    # ... your existing urls ...
+    path("notifications/", views.list_notifications, name="list_notifications"),
+    path("notifications/ack/", views.ack_notifications, name="ack_notifications"),
 ]

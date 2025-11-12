@@ -211,3 +211,11 @@ CSRF_TRUSTED_ORIGINS = [
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "/api-auth/login/"
 LOGOUT_URL = "/api-auth/logout/"
+# Email (adjust to your provider or use console backend for dev)
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "Kudiway <no-reply@kudiway.com>"
+
+# Optional Twilio (only if you want real SMS)
+# TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# TWILIO_AUTH_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# TWILIO_FROM = "+1234567890"  # your Twilio number
