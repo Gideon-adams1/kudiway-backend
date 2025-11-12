@@ -503,11 +503,12 @@ def momo_payment_status(request, reference_id):
 # 📲 MOMO PAYMENT CALLBACK (Webhook)
 # ============================================================
 @api_view(["POST"])
-@permission_classes([AllowAny])  # MTN will call this, not your logged-in user
+@permission_classes([AllowAny])
 def momo_callback(request):
     """
     MTN MoMo callback handler:
-    - Updates wallet balance
+    - Matches payer's phone to user wallet
+    - Updates that wallet balance
     - Logs the transaction
     """
     try:
@@ -517,25 +518,38 @@ def momo_callback(request):
         amount = Decimal(data.get("amount", "0"))
         payer = data.get("payer", {}).get("partyId")
 
-        print(f"📩 MoMo Callback received for {reference_id}: {status}")
+        print(f"📩 MoMo Callback received for {reference_id}: {status} | Payer: {payer}")
 
         if status == "SUCCESSFUL":
-            wallet = Wallet.objects.first()  # Later: match to user via payer
-            wallet.balance += amount
-            wallet.save()
+            # Normalize phone number (remove + or spaces)
+            normalized_phone = payer.strip().replace("+", "").replace(" ", "")
 
-            # ✅ Log transaction
-            log_transaction(
-                wallet.user,
-                transaction_type="deposit",
-                amount=amount,
-                description=f"MTN MoMo payment from {payer}",
-            )
+            # Try to find the wallet for this phone number
+            wallet = Wallet.objects.filter(phone_number=normalized_phone).first()
 
-            return Response({
-                "message": f"Wallet credited ₵{amount} for {payer}",
-                "reference_id": reference_id
-            })
+            if wallet:
+                wallet.balance += amount
+                wallet.save()
+
+                # Log transaction
+                log_transaction(
+                    wallet.user,
+                    transaction_type="deposit",
+                    amount=amount,
+                    description=f"MoMo payment from {normalized_phone}",
+                )
+
+                return Response({
+                    "message": f"Wallet credited ₵{amount} for {normalized_phone}",
+                    "user": wallet.user.username,
+                    "reference_id": reference_id
+                })
+            else:
+                print(f"⚠️ No wallet found for {normalized_phone}")
+                return Response(
+                    {"error": f"No wallet linked to {normalized_phone}"},
+                    status=404
+                )
 
         return Response({"message": "Payment pending or failed"}, status=200)
 
