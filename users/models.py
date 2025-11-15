@@ -20,28 +20,55 @@ def profile_upload_path(instance, filename):
 class Profile(models.Model):
     """
     Extended user profile that stores contact info, picture, and user role flags.
-    Each user automatically has one Profile.
+    Each user automatically has one Profile (created via signals below).
     """
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
-    profile_picture = models.ImageField(upload_to=profile_upload_path, blank=True, null=True)
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name="profile"
+    )
+    profile_picture = models.ImageField(
+        upload_to=profile_upload_path, blank=True, null=True
+    )
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     bio = models.TextField(blank=True, null=True)
-    social_followers = models.IntegerField(default=0)
-    video_review_links = models.JSONField(default=list, blank=True)
 
-
-    # ✅ Role flags
+    # ✅ Partner & Vendor flags
     is_verified_partner = models.BooleanField(default=False)
     is_vendor = models.BooleanField(default=False)
+
+    # ✅ Partner eligibility helpers
+    social_followers = models.IntegerField(default=0)
+    # Links to TikTok/IG/YouTube/X reviews etc.
+    video_review_links = models.JSONField(default=list, blank=True)
+
+    # ✅ Partner application status
+    # "none" → never applied
+    # "pending" → submitted, waiting review
+    # "approved" → verified partner
+    # "rejected" → reviewed but rejected
+    PARTNER_APP_STATUSES = [
+        ("none", "None"),
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+    partner_application_status = models.CharField(
+        max_length=20,
+        choices=PARTNER_APP_STATUSES,
+        default="none",
+    )
 
     def __str__(self):
         return f"{self.user.username}'s Profile"
 
     @property
     def points_balance(self):
-        """Quick access to user’s KudiPoints balance."""
+        """
+        Quick access to the user's KudiPoints balance.
+        Returns 0 if the user has no points wallet (failsafe).
+        """
         return self.user.points.balance if hasattr(self.user, "points") else 0
+
 
 
 # ============================================================

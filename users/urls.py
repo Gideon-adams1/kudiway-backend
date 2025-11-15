@@ -16,4 +16,7 @@ urlpatterns = [
          approve_partner,
          name="approve-partner"),  # ✅ NEW
     path("partner-status/", partner_status),     
+    path("partner-status/", views.partner_status),
+    path("partner-apply/", views.apply_partner),
+    path("partner-approve/<int:user_id>/", views.approve_partner),
 ]
