@@ -5,7 +5,6 @@ from django.utils.text import slugify
 import uuid
 from cloudinary.models import CloudinaryField
 
-
 # ============================================================
 # 🛍️ PRODUCT MODEL (Cloudinary image uploads)
 # ============================================================
@@ -27,7 +26,7 @@ class Product(models.Model):
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
-    # ✅ Cloudinary images
+    # Cloudinary images
     image = CloudinaryField("image", blank=True, null=True)
     image2 = CloudinaryField("image", blank=True, null=True)
     image3 = CloudinaryField("image", blank=True, null=True)
@@ -39,7 +38,6 @@ class Product(models.Model):
         on_delete=models.CASCADE,
         related_name="products",
     )
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -52,16 +50,13 @@ class Product(models.Model):
         return 0
 
     def save(self, *args, **kwargs):
-        """Ensure all Cloudinary URLs are HTTPS and normalized."""
         for field_name in ["image", "image2", "image3", "image4", "image5"]:
             field = getattr(self, field_name)
             if field:
                 try:
-                    # CloudinaryField with .url
                     url = str(field.url).replace("http://", "https://")
                     setattr(self, field_name, url)
                 except Exception:
-                    # If it's already a string (stored URL or public id)
                     if isinstance(field, str) and field.startswith("http"):
                         setattr(self, field_name, field.replace("http://", "https://"))
                     elif isinstance(field, str) and len(field) < 100 and "/" not in field:
@@ -77,11 +72,6 @@ class Product(models.Model):
 # 🤝 PARTNER LISTING MODEL (Affiliate / Resale)
 # ============================================================
 class PartnerListing(models.Model):
-    """
-    Verified partner resells a Kudiway product with a profit markup.
-    Buyers only see the final (base + markup) price via the referral link.
-    """
-
     partner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -99,20 +89,14 @@ class PartnerListing(models.Model):
     referral_url = models.URLField(blank=True, null=True)
     clicks = models.PositiveIntegerField(default=0)
     sales_count = models.PositiveIntegerField(default=0)
-    total_profit = models.DecimalField(
-        max_digits=12, decimal_places=2, default=Decimal("0.00"),
-        help_text="Accumulates total confirmed profit from completed sales."
-    )
+    total_profit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     slug = models.SlugField(unique=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        """Generate unique slug, referral code, and final price."""
-        # 🧮 Compute resale price
         base = self.product.price or Decimal("0.00")
         self.final_price = base + (self.markup or Decimal("0.00"))
 
-        # 🪪 Unique slug + referral code
         if not self.slug:
             base_slug = slugify(f"{self.partner.username}-{self.product.name}")
             unique_id = uuid.uuid4().hex[:6]
@@ -121,8 +105,7 @@ class PartnerListing(models.Model):
         if not self.referral_code:
             self.referral_code = uuid.uuid4().hex[:8]
 
-        # 🌐 Construct referral URL
-        base_domain = "https://kudiway.com"  # 🔁 replace with production domain if needed
+        base_domain = "https://kudiway.com"
         self.referral_url = f"{base_domain}/r/{self.referral_code}"
 
         super().save(*args, **kwargs)
@@ -157,7 +140,7 @@ class Order(models.Model):
         null=True,
         blank=True,
     )
-    partner = models.ForeignKey(  # optional overall partner on order (not required if tracked per item)
+    partner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         related_name="partner_sales",
@@ -166,16 +149,8 @@ class Order(models.Model):
     )
     subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    payment_method = models.CharField(
-        max_length=10,
-        choices=PaymentMethod.choices,
-        default=PaymentMethod.WALLET,
-    )
-    status = models.CharField(
-        max_length=10,
-        choices=Status.choices,
-        default=Status.PENDING,
-    )
+    payment_method = models.CharField(max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.WALLET)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     note = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -183,6 +158,7 @@ class Order(models.Model):
     def __str__(self):
         return f"Order #{self.id} — {self.user} — ₵{self.total_amount}"
 
+    # 🧮 Recompute totals
     def recompute_totals(self):
         subtotal = Decimal("0.00")
         for item in self.items.all():
@@ -191,47 +167,65 @@ class Order(models.Model):
         self.total_amount = subtotal
         return self.total_amount
 
+    # 🧩 Save + partner profit + eligibility tracking
     def save(self, *args, **kwargs):
-        """
-        Recalculate totals & distribute partner profit ONLY after payment confirmation.
-        - Profit per line = max(item.price - product.base_price, 0) * quantity
-        - Accumulate into PartnerListing.total_profit
-        - Increment PartnerListing.sales_count by quantity
-        """
-        # If updating an existing order, recompute subtotal/total
-        if self.pk:
+        from users.models import Profile  # avoid circular import
+
+        is_update = self.pk is not None
+        old_status = None
+
+        if is_update:
+            old_status = Order.objects.get(pk=self.pk).status
+
+        # If updating → recompute totals first
+        if is_update:
             self.recompute_totals()
 
-            # 💰 Confirmed earnings only when paid or delivered
-            if self.status in [self.Status.PAID, self.Status.DELIVERED]:
-                for item in self.items.all():
-                    if item.partner:
-                        # Safely get the base price from product (fallback to 0 if product missing)
-                        base_price = getattr(item.product, "price", None)
-                        if base_price is None:
-                            base_price = Decimal("0.00")
-
-                        # Profit per unit
-                        unit_profit = item.price - base_price
-                        if unit_profit < 0:
-                            unit_profit = Decimal("0.00")
-
-                        # Total profit for the line
-                        line_profit = unit_profit * item.quantity
-                        if line_profit > 0:
-                            # Find the listing (if it exists) to attribute the sale
-                            listing = PartnerListing.objects.filter(
-                                partner=item.partner,
-                                product=item.product
-                            ).first()
-
-                            if listing:
-                                listing.sales_count += item.quantity
-                                listing.total_profit = (listing.total_profit or Decimal("0.00")) + line_profit
-                                # Persist safely
-                                listing.save(update_fields=["sales_count", "total_profit"])
-
         super().save(*args, **kwargs)
+
+        # ============================================================
+        # 🎉 STEP 2 — PARTNER ELIGIBILITY LOGIC
+        # Trigger ONLY when order becomes PAID
+        # ============================================================
+        if is_update and old_status != "paid" and self.status == "paid":
+            profile = Profile.objects.get(user=self.user)
+
+            # Add order amount to lifetime spending
+            profile.total_spent += float(self.total_amount)
+
+            # Check requirements
+            qualifies = (
+                profile.total_spent >= 500
+                and profile.followers_count >= 1000
+                and profile.video_reviews_count >= 1
+                and self.user.kyc_profile.status == "Approved"
+            )
+
+            if qualifies:
+                profile.is_partner_approved = True
+
+            profile.save()
+
+        # ============================================================
+        # 💰 Profit assignment for partner listings (existing logic unchanged)
+        # ============================================================
+        if is_update and self.status in ["paid", "delivered"]:
+            for item in self.items.all():
+                if item.partner:
+                    base_price = getattr(item.product, "price", None) or Decimal("0.00")
+                    unit_profit = max(item.price - base_price, Decimal("0.00"))
+                    line_profit = unit_profit * item.quantity
+
+                    if line_profit > 0:
+                        listing = PartnerListing.objects.filter(
+                            partner=item.partner,
+                            product=item.product
+                        ).first()
+
+                        if listing:
+                            listing.sales_count += item.quantity
+                            listing.total_profit = (listing.total_profit or Decimal("0.00")) + line_profit
+                            listing.save(update_fields=["sales_count", "total_profit"])
 
 
 # ============================================================
@@ -256,16 +250,15 @@ class OrderItem(models.Model):
         null=True,
         blank=True,
         related_name="partner_order_items",
-        help_text="If the item was sold through a partner referral link.",
     )
 
     def line_total(self):
         return self.price * self.quantity
 
     def save(self, *args, **kwargs):
-        """Preserve product snapshots for history."""
         if not self.product_name_snapshot and self.product:
             self.product_name_snapshot = getattr(self.product, "name", str(self.product))
+
         if not self.product_image_snapshot and self.product:
             img = getattr(self.product, "image", "")
             if img:
@@ -279,6 +272,7 @@ class OrderItem(models.Model):
                             self.product_image_snapshot = (
                                 f"https://res.cloudinary.com/dmpymbirt/image/upload/{img}.jpg"
                             )
+
         super().save(*args, **kwargs)
 
     def __str__(self):

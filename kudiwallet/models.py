@@ -9,21 +9,48 @@ from datetime import timedelta, date
 # =========================
 class Wallet(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    balance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))          # 💼 Wallet funds
-    savings_balance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))  # 🪙 Savings
-    credit_balance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))   # 💳 Credit owed
+    balance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00")
+    )  # 💼 Wallet funds
+    savings_balance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00")
+    )  # 🪙 Savings
+    credit_balance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00")
+    )  # 💳 Credit owed
     created_at = models.DateTimeField(auto_now_add=True)
-    credit_limit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("500.00"))
+    credit_limit = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("500.00")
+    )
     credit_score = models.PositiveIntegerField(default=600)
-    phone_number = models.CharField(max_length=10, blank=True, null=True, unique=True)
 
+    # 🔢 MoMo / phone identifier (use 20 to support full MSISDN like 233501234567)
+    phone_number = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        unique=True
+    )
 
     def __str__(self):
         return f"{self.user.username}'s Wallet"
 
     # ✅ Utility method to safely update balance and log a transaction
     def update_balance(self, amount: Decimal, transaction_type: str, description: str = ""):
-        """Adjusts wallet balance and logs a transaction automatically."""
+        """
+        Adjusts wallet balance and logs a transaction automatically.
+
+        amount:
+            Positive to deposit, negative to withdraw.
+        """
         new_balance = self.balance + Decimal(amount)
         if new_balance < 0:
             raise ValueError("Insufficient funds")
@@ -42,15 +69,20 @@ class Wallet(models.Model):
 
     # ✅ Credit score adjustment method
     def update_credit_score(self):
-        """Auto-adjust credit score monthly based on repayment behavior and credit usage."""
+        """
+        Auto-adjust credit score monthly based on repayment behavior and credit usage.
+        Very simple heuristic for now.
+        """
         if self.credit_balance == 0:
             self.credit_score = min(self.credit_score + 10, 1000)
         elif self.credit_balance > (self.credit_limit * Decimal("0.8")):
             self.credit_score = max(self.credit_score - 15, 300)
         elif self.credit_balance < (self.credit_limit * Decimal("0.5")):
             self.credit_score = min(self.credit_score + 5, 1000)
+
         if self.savings_balance > (self.credit_balance * Decimal("0.5")):
             self.credit_score = min(self.credit_score + 3, 1000)
+
         self.save()
         return self.credit_score
 
@@ -93,16 +125,41 @@ class CreditPurchase(models.Model):
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="credit_purchases")
-    item_name = models.CharField(max_length=150, default="Store Purchase")  # ✅ From your app’s BNPL flow
+    wallet = models.ForeignKey(
+        Wallet,
+        on_delete=models.CASCADE,
+        related_name="credit_purchases"
+    )
+    item_name = models.CharField(
+        max_length=150,
+        default="Store Purchase"
+    )  # ✅ From your app’s BNPL flow
     total_amount = models.DecimalField(max_digits=12, decimal_places=2)
     down_payment = models.DecimalField(max_digits=12, decimal_places=2)
     credit_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    remaining_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
-    penalty_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("1.00"))
-    due_date = models.DateField(default=timezone.now() + timedelta(days=14))
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
+    remaining_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0
+    )
+    interest_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("5.00")
+    )
+    penalty_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("1.00")
+    )
+    due_date = models.DateField(
+        default=timezone.now() + timedelta(days=14)
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="ACTIVE"
+    )
     is_paid = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -110,8 +167,12 @@ class CreditPurchase(models.Model):
         return f"{self.user.username} - {self.item_name} (₵{self.credit_amount})"
 
     def total_due(self):
-        """Calculate total owed including interest and penalty if overdue"""
-        base_due = self.credit_amount * (Decimal("1.00") + (self.interest_rate / Decimal("100")))
+        """
+        Calculate total owed including interest and penalty if overdue.
+        """
+        base_due = self.credit_amount * (
+            Decimal("1.00") + (self.interest_rate / Decimal("100"))
+        )
         if date.today() > self.due_date:
             penalty = self.credit_amount * (self.penalty_rate / Decimal("100"))
             return base_due + penalty
@@ -131,10 +192,10 @@ def kyc_upload_path(instance, filename):
 # =========================
 class KYC(models.Model):
     ID_TYPES = [
-        ('Passport', 'Passport'),
-        ('Driver’s License', 'Driver’s License'),
-        ('National ID', 'National ID'),
-        ('Voter ID', 'Voter ID'),
+        ("Passport", "Passport"),
+        ("Driver’s License", "Driver’s License"),
+        ("National ID", "National ID"),
+        ("Voter ID", "Voter ID"),
     ]
 
     STATUS_CHOICES = [
@@ -143,23 +204,42 @@ class KYC(models.Model):
         ("Rejected", "Rejected"),
     ]
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="kyc_profile")
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="kyc_profile"
+    )
     full_name = models.CharField(max_length=150, default="Unknown")
-    id_type = models.CharField(max_length=50, choices=ID_TYPES, default="Unknown")
+    id_type = models.CharField(
+        max_length=50,
+        choices=ID_TYPES,
+        default="Passport"
+    )
     id_number = models.CharField(max_length=50, default="Unknown")
     id_front = models.ImageField(upload_to=kyc_upload_path, blank=True, null=True)
     id_back = models.ImageField(upload_to=kyc_upload_path, blank=True, null=True)
     selfie = models.ImageField(upload_to=kyc_upload_path, blank=True, null=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="Pending"
+    )
     remarks = models.TextField(blank=True, null=True)
     submitted_at = models.DateTimeField(default=timezone.now)
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username} - {self.status}"
-# --- MoMo callback log ---
-# ✅ Logs every MoMo callback that hits your system
+
+
+# =========================
+# 📡 MoMo Callback Log
+# =========================
 class MomoCallbackLog(models.Model):
+    """
+    Logs every MoMo callback that hits your system.
+    Helps with debugging and audit trail.
+    """
     reference_id = models.CharField(max_length=100)
     status = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -171,8 +251,13 @@ class MomoCallbackLog(models.Model):
         return f"{self.reference_id} - {self.status}"
 
 
-# ✅ In-app notification system (for wallet events)
+# =========================
+# 🔔 In-app Notifications
+# =========================
 class Notification(models.Model):
+    """
+    Basic in-app notification model for wallet / MoMo events.
+    """
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
     body = models.TextField()

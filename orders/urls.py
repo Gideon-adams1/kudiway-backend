@@ -1,5 +1,6 @@
 from django.urls import path, re_path
 from . import views
+from .views import my_listings
 
 urlpatterns = [
     # ============================================================
@@ -38,5 +39,5 @@ urlpatterns = [
     # 🔹 Web-friendly short route for deep links (e.g., https://kudiwayapp.com/r/abc123)
     re_path(r"^r/(?P<ref_code>[A-Za-z0-9]+)/$", views.get_referral_product, name="get_referral_product_short"),
     path("checkout/<str:ref_code>/", views.referral_checkout, name="referral_checkout"),
-
+    path("my-listings/", my_listings),
 ]

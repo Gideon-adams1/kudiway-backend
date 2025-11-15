@@ -2,6 +2,8 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.conf import settings
+from django.utils import timezone
 
 
 # ============================================================
@@ -18,15 +20,18 @@ def profile_upload_path(instance, filename):
 class Profile(models.Model):
     """
     Extended user profile that stores contact info, picture, and user role flags.
-    Each user automatically has one Profile (created via signals below).
+    Each user automatically has one Profile.
     """
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
     profile_picture = models.ImageField(upload_to=profile_upload_path, blank=True, null=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     bio = models.TextField(blank=True, null=True)
+    social_followers = models.IntegerField(default=0)
+    video_review_links = models.JSONField(default=list, blank=True)
 
-    # ✅ Partner & Vendor flags
+
+    # ✅ Role flags
     is_verified_partner = models.BooleanField(default=False)
     is_vendor = models.BooleanField(default=False)
 
@@ -35,10 +40,7 @@ class Profile(models.Model):
 
     @property
     def points_balance(self):
-        """
-        Quick access to the user's KudiPoints balance.
-        Returns 0 if the user has no points wallet (failsafe).
-        """
+        """Quick access to user’s KudiPoints balance."""
         return self.user.points.balance if hasattr(self.user, "points") else 0
 
 
@@ -46,11 +48,7 @@ class Profile(models.Model):
 # 💎 KUDIWAY POINTS WALLET MODEL
 # ============================================================
 class KudiPoints(models.Model):
-    """
-    Tracks reward points for every user.
-    These points are earned through reselling, referrals, or activity.
-    10 points = ₵1 (set in your reward logic).
-    """
+    """Tracks reward points for each user."""
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="points")
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -59,24 +57,16 @@ class KudiPoints(models.Model):
     def __str__(self):
         return f"{self.user.username} – {self.balance} pts"
 
-    # ➕ Add points to user's balance
+    # ➕ Add points
     def add_points(self, amount):
-        """
-        Safely increase user's points balance.
-        Example: add_points(200) → adds 200 points.
-        """
         if amount > 0:
             self.balance += amount
             self.save(update_fields=["balance", "updated_at"])
             return True
         return False
 
-    # ➖ Redeem points for checkout
+    # ➖ Redeem points
     def redeem_points(self, amount):
-        """
-        Deduct points (e.g., when user pays with points).
-        Returns True if successful.
-        """
         if amount > 0 and self.balance >= amount:
             self.balance -= amount
             self.save(update_fields=["balance", "updated_at"])
@@ -89,14 +79,102 @@ class KudiPoints(models.Model):
 # ============================================================
 @receiver(post_save, sender=User)
 def create_related_user_objects(sender, instance, created, **kwargs):
-    """
-    Automatically create Profile and KudiPoints wallet for every new user.
-    Ensures no user exists without these linked objects.
-    """
+    """Automatically create Profile + Points wallet for every new user."""
     if created:
         Profile.objects.create(user=instance)
         KudiPoints.objects.create(user=instance)
     else:
-        # Ensure both exist for legacy users
         Profile.objects.get_or_create(user=instance)
         KudiPoints.objects.get_or_create(user=instance)
+
+
+# ============================================================
+# ⭐ KUDI PARTNER MODEL (RESELLER PROGRAM)
+# ============================================================
+class KudiPartner(models.Model):
+    STATUS_CHOICES = [
+        ("NEW", "New"),
+        ("PENDING", "Pending Review"),
+        ("APPROVED", "Approved"),
+        ("REJECTED", "Rejected"),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="kudi_partner",
+    )
+
+    # Requirements tracking
+    total_spent_ghs = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Total purchases on Kudiway (GHS)."
+    )
+    followers_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Social media followers."
+    )
+    avg_engagement = models.PositiveIntegerField(
+        default=0,
+        help_text="Average likes/comments/views per post."
+    )
+    primary_platform = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Platform: Instagram / TikTok / YouTube"
+    )
+    social_handle = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="@username or profile link"
+    )
+    has_video_review = models.BooleanField(
+        default=False,
+        help_text="Has posted at least one Kudiway product review video."
+    )
+
+    # Partner status
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="NEW",
+    )
+
+    requirements_met = models.BooleanField(
+        default=False,
+        help_text="Auto true when ₵500+ spent, 1000 followers, + verified review."
+    )
+
+    # Meta fields
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'KudiPartner<{self.user.username}>'
+# ============================================================
+# 🤝 PARTNER APPLICATION MODEL
+# ============================================================
+class PartnerApplication(models.Model):
+    STATUS_CHOICES = [
+        ("Pending", "Pending"),
+        ("Approved", "Approved"),
+        ("Rejected", "Rejected"),
+    ]
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="partner_application")
+    instagram_link = models.URLField(blank=True, null=True)
+    tiktok_link = models.URLField(blank=True, null=True)
+    youtube_link = models.URLField(blank=True, null=True)
+
+    followers = models.PositiveIntegerField(default=0)
+
+    video_review_link = models.URLField(blank=True, null=True)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.user.username} – {self.status}"

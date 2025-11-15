@@ -429,3 +429,35 @@ def referral_checkout(request, ref_code):
         print("❌ referral_checkout error:", e)
         print(traceback.format_exc())
         return HttpResponse("<h2>Server error.</h2>", status=500)
+# ------------------------------------------
+# 📦 GET MY PARTNER LISTINGS
+# ------------------------------------------
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from .models import PartnerListing
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_listings(request):
+    user = request.user
+
+    listings = PartnerListing.objects.filter(partner=user)
+
+    data = []
+    for l in listings:
+        data.append({
+            "id": l.id,
+            "name": l.product.name,
+            "product": {
+                "name": l.product.name,
+                "price": float(l.product.price),
+                "image": str(getattr(l.product.image, "url", "")),
+            },
+            "markup": float(l.markup),
+            "total_profit": float(l.total_profit or 0),
+            "slug": l.slug,
+            "referral_url": l.referral_url,
+        })
+
+    return Response(data)
