@@ -17,7 +17,7 @@ from kudiwallet.models import Wallet, Transaction
 from users.models import KudiPoints
 from .models import Order, OrderItem, Product, PartnerListing
 from .serializers import OrderSerializer, ProductSerializer, PartnerListingSerializer
-
+from rest_framework.permissions import IsAdminUser
 
 # ============================================================
 # 💵 TRANSACTION LOGGER
@@ -461,3 +461,25 @@ def my_listings(request):
         })
 
     return Response(data)
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def list_all_orders(request):
+    """
+    Admin-only: list all orders (used for dashboard stats).
+    """
+    orders = Order.objects.all().order_by("-created_at")
+
+    data = []
+    for o in orders:
+        data.append(
+            {
+                "id": o.id,
+                "user": o.user.username,
+                "total_amount": float(o.total_amount),
+                "status": o.status,
+                "payment_method": o.payment_method,
+                "created_at": o.created_at,
+            }
+        )
+
+    return Response(data, status=status.HTTP_200_OK)

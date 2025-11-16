@@ -40,4 +40,5 @@ urlpatterns = [
     re_path(r"^r/(?P<ref_code>[A-Za-z0-9]+)/$", views.get_referral_product, name="get_referral_product_short"),
     path("checkout/<str:ref_code>/", views.referral_checkout, name="referral_checkout"),
     path("my-listings/", my_listings),
+    path("all/", views.list_all_orders, name="orders-all"),
 ]

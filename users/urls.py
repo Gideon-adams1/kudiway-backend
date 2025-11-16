@@ -15,24 +15,12 @@ urlpatterns = [
     # 💎 KudiPoints
     path("points/", views.get_kudi_points, name="get_kudi_points"),
 
-    # 🤝 Partner Program
+    # 🤝 Partner Program (user-side)
     path("partner-status/", views.partner_status, name="partner-status"),
     path("partner-apply/", views.apply_partner, name="partner-apply"),
 
-    # 🛂 Admin Approval (admin-only)
-    path(
-        "partner-approve/<int:user_id>/",
-        views.approve_partner,
-        name="partner-approve"
-    ),
-    path(
-        "partner-reject/<int:user_id>/",
-        views.reject_partner,
-        name="partner-reject"
-    ),
-
-    # 📊 Admin Dashboard Endpoints
-    path("admin/stats/", views.admin_stats, name="admin-stats"),
-    path("admin/partner-apps/", views.admin_partner_apps, name="admin-partner-apps"),
-    path("admin/partner-reject/<int:user_id>/", views.reject_partner, name="admin-partner-reject"),
+    # 🛂 Admin Partner Management
+    path("admin/partners/pending/", views.pending_partners, name="admin-partners-pending"),
+    path("partner-approve/<int:user_id>/", views.approve_partner, name="partner-approve"),
+    path("partner-reject/<int:user_id>/", views.reject_partner, name="partner-reject"),
 ]
