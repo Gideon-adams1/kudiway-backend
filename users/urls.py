@@ -1,22 +1,38 @@
 from django.urls import path
 from . import views
-from .views import apply_partner, approve_partner   # ← Add this
-from .views import partner_status
 
 urlpatterns = [
-    path('register/', views.register_user, name='register'),
-    path('login/', views.login_user, name='login'),
-    path('logout/', views.logout_user, name='logout'),
-    path('current-user/', views.get_current_user, name='get_current_user'),
-    path('update-profile/', views.update_profile, name='update_profile'),
-    path('profile/', views.get_profile, name='get_profile'),
+    # 🔐 Auth
+    path("register/", views.register_user, name="register"),
+    path("login/", views.login_user, name="login"),
+    path("logout/", views.logout_user, name="logout"),
+
+    # 👤 Profile
+    path("current-user/", views.get_current_user, name="get_current_user"),
+    path("update-profile/", views.update_profile, name="update_profile"),
+    path("profile/", views.get_profile, name="get_profile"),
+
+    # 💎 KudiPoints
     path("points/", views.get_kudi_points, name="get_kudi_points"),
-    path("apply-partner/", apply_partner, name="apply-partner"),
-    path("partner-application/<int:application_id>/review/",
-         approve_partner,
-         name="approve-partner"),  # ✅ NEW
-    path("partner-status/", partner_status),     
-    path("partner-status/", views.partner_status),
-    path("partner-apply/", views.apply_partner),
-    path("partner-approve/<int:user_id>/", views.approve_partner),
+
+    # 🤝 Partner Program
+    path("partner-status/", views.partner_status, name="partner-status"),
+    path("partner-apply/", views.apply_partner, name="partner-apply"),
+
+    # 🛂 Admin Approval (admin-only)
+    path(
+        "partner-approve/<int:user_id>/",
+        views.approve_partner,
+        name="partner-approve"
+    ),
+    path(
+        "partner-reject/<int:user_id>/",
+        views.reject_partner,
+        name="partner-reject"
+    ),
+
+    # 📊 Admin Dashboard Endpoints
+    path("admin/stats/", views.admin_stats, name="admin-stats"),
+    path("admin/partner-apps/", views.admin_partner_apps, name="admin-partner-apps"),
+    path("admin/partner-reject/<int:user_id>/", views.reject_partner, name="admin-partner-reject"),
 ]

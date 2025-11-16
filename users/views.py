@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.db.models import Sum
+from django.conf import settings
+from django.core.mail import send_mail
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -12,6 +14,7 @@ from rest_framework.response import Response
 
 from .models import Profile, KudiPoints
 from orders.models import Order
+from kudiwallet.models import Notification  # ✅ in-app notifications
 
 
 # ============================================================
@@ -377,13 +380,14 @@ def apply_partner(request):
 
 
 # ============================================================
-# ✅ ADMIN: APPROVE PARTNER
+# ✅ ADMIN: APPROVE PARTNER (with email + in-app notification)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAdminUser])
 def approve_partner(request, user_id):
     """
     Admin endpoint to approve a user as a verified partner.
+    Also sends the user an email + in-app notification.
     """
     try:
         user = User.objects.get(id=user_id)
@@ -398,6 +402,42 @@ def approve_partner(request, user_id):
     profile.partner_application_status = "approved"
     profile.save(update_fields=["is_verified_partner", "partner_application_status"])
 
+    # ✉️ Send email notification (if user has email)
+    if user.email:
+        subject = "You’ve been approved as a Kudiway Partner"
+        message = (
+            f"Hi {user.username},\n\n"
+            "Congratulations! Your application to become a verified Kudiway Partner has been approved.\n\n"
+            "You can now access your KPartner Hub in the Kudiway app, create resell listings, "
+            "and start earning from your sales.\n\n"
+            "Thank you for building with Kudiway.\n\n"
+            "— Kudiway Team"
+        )
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@kudiway.com")
+
+        try:
+            send_mail(
+                subject,
+                message,
+                from_email,
+                [user.email],
+                fail_silently=True,
+            )
+        except Exception:
+            # We don't fail the API if email fails – just log in real app
+            pass
+
+    # 🔔 In-app notification
+    Notification.objects.create(
+        user=user,
+        title="Partner Application Approved",
+        body=(
+            "Congratulations! Your Kudiway Partner application has been approved. "
+            "Open the app to access your Partner Hub and start reselling."
+        ),
+        data={"type": "PARTNER_APPROVED"},
+    )
+
     return Response(
         {
             "message": f"{user.username} has been approved as a Kudiway Partner.",
@@ -405,3 +445,123 @@ def approve_partner(request, user_id):
         },
         status=status.HTTP_200_OK,
     )
+# ============================================================
+# ❌ ADMIN: REJECT PARTNER
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def reject_partner(request, user_id):
+    """
+    Admin rejects a partner application.
+    Sends email + in-app notification.
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({"error": "User not found."}, status=404)
+
+    profile = user.profile
+    profile.is_verified_partner = False
+    profile.partner_application_status = "rejected"
+    profile.save(update_fields=["is_verified_partner", "partner_application_status"])
+
+    # ✉️ Email notification
+    if user.email:
+        subject = "Your Kudiway Partner Application Was Not Approved"
+        message = (
+            f"Hi {user.username},\n\n"
+            "Thank you for applying to become a Kudiway Partner.\n\n"
+            "After reviewing your application, we were unable to approve it at this time.\n"
+            "Feel free to improve your profile and reapply again in the future.\n\n"
+            "— Kudiway Team"
+        )
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@kudiway.com")
+        try:
+            send_mail(subject, message, from_email, [user.email], fail_silently=True)
+        except Exception:
+            pass
+
+    # 🔔 In-app notification
+    Notification.objects.create(
+        user=user,
+        title="Partner Application Rejected",
+        body="Your Kudiway Partner application was not approved. You may reapply later.",
+        data={"type": "PARTNER_REJECTED"},
+    )
+
+    return Response({"message": f"{user.username}'s application was rejected."}, status=200)
+
+
+
+# ============================================================
+# 📊 ADMIN: GLOBAL APP STATISTICS
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def admin_stats(request):
+    """
+    Returns global statistics for admin dashboard.
+    """
+    total_users = User.objects.count()
+    total_partners = Profile.objects.filter(is_verified_partner=True).count()
+    pending_apps = Profile.objects.filter(partner_application_status="pending").count()
+
+    total_revenue = (
+        Order.objects.filter(status=Order.Status.PAID)
+        .aggregate(Sum("total_amount"))["total_amount__sum"]
+        or 0
+    )
+
+    return Response(
+        {
+            "total_users": total_users,
+            "total_partners": total_partners,
+            "pending_applications": pending_apps,
+            "total_revenue": float(total_revenue),
+        },
+        status=200,
+    )
+
+
+
+# ============================================================
+# 📋 ADMIN: LIST ALL PARTNER APPLICATIONS
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def admin_partner_apps(request):
+    """
+    Returns all users with partner application info.
+    """
+    users = User.objects.all().select_related("profile")
+
+    result = []
+    for user in users:
+        profile = user.profile
+
+        # total spent
+        spent = (
+            Order.objects.filter(user=user, status=Order.Status.PAID)
+            .aggregate(Sum("total_amount"))["total_amount__sum"]
+            or 0
+        )
+
+        # kyc
+        kyc = getattr(user, "kyc_profile", None)
+        kyc_status = kyc.status if kyc else "Missing"
+
+        result.append(
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "kyc_status": kyc_status,
+                "total_spent": float(spent),
+                "social_followers": profile.social_followers,
+                "video_reviews": len(profile.video_review_links or []),
+                "application_status": profile.partner_application_status,
+                "is_verified_partner": profile.is_verified_partner,
+            }
+        )
+
+    return Response({"applications": result}, status=200)
