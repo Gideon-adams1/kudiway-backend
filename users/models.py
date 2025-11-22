@@ -4,13 +4,17 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.conf import settings
 from django.utils import timezone
+from django.core.validators import MinValueValidator
 
 
 # ============================================================
 # 🖼️ Helper for profile image uploads
 # ============================================================
 def profile_upload_path(instance, filename):
-    """Dynamic path for each user’s profile picture."""
+    """
+    Dynamic path for each user’s profile picture.
+    Example: profiles/gideon/profile.jpg
+    """
     return f"profiles/{instance.user.username}/{filename}"
 
 
@@ -18,45 +22,68 @@ def profile_upload_path(instance, filename):
 # 👤 USER PROFILE MODEL
 # ============================================================
 class Profile(models.Model):
-    """
-    Extended user profile that stores contact info, picture, and user role flags.
-    Each user automatically has one Profile (created via signals below).
-    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
 
-    user = models.OneToOneField(
-        User, on_delete=models.CASCADE, related_name="profile"
-    )
-    profile_picture = models.ImageField(
-        upload_to=profile_upload_path, blank=True, null=True
-    )
+    # Basic info
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     bio = models.TextField(blank=True, null=True)
+    profile_picture = models.ImageField(
+        upload_to=profile_upload_path, null=True, blank=True
+    )
 
-    # ✅ Partner & Vendor flags
+    # Partner program flags
     is_verified_partner = models.BooleanField(default=False)
-    is_vendor = models.BooleanField(default=False)
-
-    # ✅ Partner eligibility helpers
-    social_followers = models.IntegerField(default=0)
-    # Links to TikTok/IG/YouTube/X reviews etc.
-    video_review_links = models.JSONField(default=list, blank=True)
-
-    # ✅ Partner application status
-    # "none" → never applied
-    # "pending" → submitted, waiting review
-    # "approved" → verified partner
-    # "rejected" → reviewed but rejected
-    PARTNER_APP_STATUSES = [
-        ("none", "None"),
-        ("pending", "Pending"),
-        ("approved", "Approved"),
-        ("rejected", "Rejected"),
-    ]
     partner_application_status = models.CharField(
         max_length=20,
-        choices=PARTNER_APP_STATUSES,
-        default="none",
+        default="none",  # none, pending, approved, rejected
+        choices=[
+            ("none", "None"),
+            ("pending", "Pending"),
+            ("approved", "Approved"),
+            ("rejected", "Rejected"),
+        ],
     )
+
+    # 🔗 Social / influence info for partner eligibility
+    social_media_platform = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        choices=[
+            ("TikTok", "TikTok"),
+            ("Instagram", "Instagram"),
+            ("Facebook", "Facebook"),
+            ("YouTube", "YouTube"),
+            ("Snapchat", "Snapchat"),
+            ("X", "X (Twitter)"),
+            ("Other", "Other"),
+        ],
+        help_text="Primary social media platform used to promote Kudiway.",
+    )
+
+    social_media_handle = models.CharField(
+        max_length=150,
+        blank=True,
+        null=True,
+        help_text="Handle or profile link (e.g., @gideonadams).",
+    )
+
+    social_followers = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Total followers on primary social account.",
+    )
+
+    # Multiple video review links allowed (YouTube, TikTok, Drive, etc.)
+    video_review_links = models.JSONField(
+        default=list,
+        blank=True,
+        null=True,
+        help_text="List of URLs to product review videos.",
+    )
+
+    # Vendor flag (for store owners / sellers)
+    is_vendor = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user.username}'s Profile"
@@ -70,14 +97,15 @@ class Profile(models.Model):
         return self.user.points.balance if hasattr(self.user, "points") else 0
 
 
-
 # ============================================================
 # 💎 KUDIWAY POINTS WALLET MODEL
 # ============================================================
 class KudiPoints(models.Model):
     """Tracks reward points for each user."""
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="points")
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name="points"
+    )
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -106,7 +134,10 @@ class KudiPoints(models.Model):
 # ============================================================
 @receiver(post_save, sender=User)
 def create_related_user_objects(sender, instance, created, **kwargs):
-    """Automatically create Profile + Points wallet for every new user."""
+    """
+    Automatically create Profile + Points wallet for every new user.
+    Also ensures legacy users always have both.
+    """
     if created:
         Profile.objects.create(user=instance)
         KudiPoints.objects.create(user=instance)
@@ -116,9 +147,14 @@ def create_related_user_objects(sender, instance, created, **kwargs):
 
 
 # ============================================================
-# ⭐ KUDI PARTNER MODEL (RESELLER PROGRAM)
+# ⭐ (OPTIONAL) KUDI PARTNER MODEL (extra analytics layer)
 # ============================================================
 class KudiPartner(models.Model):
+    """
+    Optional extra model if you want a separate partner analytics object.
+    NOTE: Current partner logic mainly uses Profile fields.
+    """
+
     STATUS_CHOICES = [
         ("NEW", "New"),
         ("PENDING", "Pending Review"),
@@ -137,29 +173,29 @@ class KudiPartner(models.Model):
         max_digits=10,
         decimal_places=2,
         default=0,
-        help_text="Total purchases on Kudiway (GHS)."
+        help_text="Total purchases on Kudiway (GHS).",
     )
     followers_count = models.PositiveIntegerField(
         default=0,
-        help_text="Social media followers."
+        help_text="Social media followers.",
     )
     avg_engagement = models.PositiveIntegerField(
         default=0,
-        help_text="Average likes/comments/views per post."
+        help_text="Average likes/comments/views per post.",
     )
     primary_platform = models.CharField(
         max_length=50,
         blank=True,
-        help_text="Platform: Instagram / TikTok / YouTube"
+        help_text="Platform: Instagram / TikTok / YouTube, etc.",
     )
     social_handle = models.CharField(
         max_length=100,
         blank=True,
-        help_text="@username or profile link"
+        help_text="@username or profile link.",
     )
     has_video_review = models.BooleanField(
         default=False,
-        help_text="Has posted at least one Kudiway product review video."
+        help_text="Has posted at least one Kudiway product review video.",
     )
 
     # Partner status
@@ -171,7 +207,7 @@ class KudiPartner(models.Model):
 
     requirements_met = models.BooleanField(
         default=False,
-        help_text="Auto true when ₵500+ spent, 1000 followers, + verified review."
+        help_text="True when ₵500+ spent, 1000+ followers, and verified review.",
     )
 
     # Meta fields
@@ -179,27 +215,43 @@ class KudiPartner(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f'KudiPartner<{self.user.username}>'
+        return f"KudiPartner<{self.user.username}>"
+
+
 # ============================================================
-# 🤝 PARTNER APPLICATION MODEL
+# 🤝 (OPTIONAL) PARTNER APPLICATION MODEL
 # ============================================================
 class PartnerApplication(models.Model):
+    """
+    Optional dedicated model to store detailed partner applications.
+    Current API logic uses Profile.partner_application_status,
+    but you can use this for deeper audit/history if needed.
+    """
+
     STATUS_CHOICES = [
         ("Pending", "Pending"),
         ("Approved", "Approved"),
         ("Rejected", "Rejected"),
     ]
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="partner_application")
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="partner_application",
+    )
+
     instagram_link = models.URLField(blank=True, null=True)
     tiktok_link = models.URLField(blank=True, null=True)
     youtube_link = models.URLField(blank=True, null=True)
 
     followers = models.PositiveIntegerField(default=0)
-
     video_review_link = models.URLField(blank=True, null=True)
 
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="Pending",
+    )
     submitted_at = models.DateTimeField(default=timezone.now)
     reviewed_at = models.DateTimeField(blank=True, null=True)
 

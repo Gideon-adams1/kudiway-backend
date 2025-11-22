@@ -5,16 +5,12 @@ from django.conf import settings
 from django.core.mail import send_mail
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import (
-    IsAuthenticated,
-    AllowAny,
-    IsAdminUser,
-)
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework.response import Response
 
 from .models import Profile, KudiPoints
 from orders.models import Order
-from kudiwallet.models import Notification  # ✅ in-app notifications
+from kudiwallet.models import Notification
 
 
 # ============================================================
@@ -23,70 +19,49 @@ from kudiwallet.models import Notification  # ✅ in-app notifications
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register_user(request):
-    """
-    Register a new user account.
-    """
     data = request.data
     username = data.get("username")
     email = data.get("email")
     password = data.get("password")
 
     if not username or not password:
-        return Response(
-            {"error": "Username and password are required."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Username and password are required."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.filter(username=username).exists():
-        return Response(
-            {"error": "Username already exists."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Username already exists."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    user = User.objects.create_user(
-        username=username, email=email, password=password
-    )
-    # Profile & KudiPoints are created via signals
+    User.objects.create_user(username=username, email=email, password=password)
 
-    return Response(
-        {"message": "User registered successfully."},
-        status=status.HTTP_201_CREATED,
-    )
+    return Response({"message": "User registered successfully."},
+                    status=status.HTTP_201_CREATED)
 
 
 # ============================================================
-# 🔐 USER LOGIN
+# 🔐 LOGIN
 # ============================================================
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login_user(request):
-    """
-    Log in a user and return a success response.
-    """
     username = request.data.get("username")
     password = request.data.get("password")
     user = authenticate(request, username=username, password=password)
 
-    if user is not None:
+    if user:
         login(request, user)
-        return Response(
-            {"message": "Login successful.", "username": user.username}
-        )
-    return Response(
-        {"error": "Invalid credentials."},
-        status=status.HTTP_401_UNAUTHORIZED,
-    )
+        return Response({"message": "Login successful.", "username": user.username})
+
+    return Response({"error": "Invalid credentials."},
+                    status=status.HTTP_401_UNAUTHORIZED)
 
 
 # ============================================================
-# 🚪 USER LOGOUT
+# 🚪 LOGOUT
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def logout_user(request):
-    """
-    Log out the current user.
-    """
     logout(request)
     return Response({"message": "Logout successful."})
 
@@ -97,216 +72,163 @@ def logout_user(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_current_user(request):
-    """
-    Get info for the currently authenticated user.
-    """
     user = request.user
-    profile = getattr(user, "profile", None)
+    profile = user.profile
     points, _ = KudiPoints.objects.get_or_create(user=user)
 
-    data = {
+    return Response({
         "username": user.username,
         "email": user.email,
-        "phone_number": getattr(profile, "phone_number", ""),
-        "bio": getattr(profile, "bio", ""),
-        "profile_picture": (
-            profile.profile_picture.url
-            if getattr(profile, "profile_picture", None)
-            else None
-        ),
-        "is_verified_partner": getattr(profile, "is_verified_partner", False),
-        "is_vendor": getattr(profile, "is_vendor", False),
-        "social_followers": getattr(profile, "social_followers", 0),
-        "video_review_links": getattr(profile, "video_review_links", []),
-        "partner_application_status": getattr(
-            profile, "partner_application_status", "none"
-        ),
+        "phone_number": profile.phone_number,
+        "bio": profile.bio,
+        "profile_picture": profile.profile_picture.url if profile.profile_picture else None,
+        "is_verified_partner": profile.is_verified_partner,
+        "is_vendor": profile.is_vendor,
+        "social_media_platform": profile.social_media_platform,
+        "social_media_handle": profile.social_media_handle,
+        "social_followers": profile.social_followers,
+        "video_review_links": profile.video_review_links,
+        "partner_application_status": profile.partner_application_status,
         "points_balance": float(points.balance),
-        # 👇 expose admin flags so App.js can show Admin tab
         "is_staff": user.is_staff,
         "is_superuser": user.is_superuser,
-    }
-
-    return Response(data, status=status.HTTP_200_OK)
+    })
 
 
 # ============================================================
-# 🛠️ UPDATE PROFILE
+# 🛠 UPDATE PROFILE
 # ============================================================
 @api_view(["PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def update_profile(request):
-    """
-    Update user's profile information.
-    """
     user = request.user
-    profile, _ = Profile.objects.get_or_create(user=user)
+    profile = user.profile
     data = request.data
 
-    user.email = data.get("email", user.email)
-    user.save()
+    # Update user fields
+    if "email" in data:
+        user.email = data["email"]
+        user.save()
 
+    # Update profile basic fields
     profile.phone_number = data.get("phone_number", profile.phone_number)
     profile.bio = data.get("bio", profile.bio)
 
-    # Client MAY update social followers & video links
+    # NEW — Social media platform
+    if "social_media_platform" in data:
+        profile.social_media_platform = data.get("social_media_platform") or ""
+
+    # NEW — Social media handle
+    if "social_media_handle" in data:
+        profile.social_media_handle = data.get("social_media_handle") or ""
+
+    # NEW — Social followers
     if "social_followers" in data:
         try:
             profile.social_followers = int(data["social_followers"])
         except (TypeError, ValueError):
             pass
 
-    if "video_review_links" in data and isinstance(
-        data["video_review_links"], list
-    ):
+    # NEW — Review video links (array)
+    if "video_review_links" in data and isinstance(data["video_review_links"], list):
         profile.video_review_links = data["video_review_links"]
 
-    # Handle verification flags (normally admin controlled)
+    # Admin-controlled flags (optional)
     if "is_verified_partner" in data:
         profile.is_verified_partner = bool(data["is_verified_partner"])
+
     if "is_vendor" in data:
         profile.is_vendor = bool(data["is_vendor"])
 
     profile.save()
 
-    return Response(
-        {"message": "Profile updated successfully."},
-        status=status.HTTP_200_OK,
-    )
+    return Response({"message": "Profile updated successfully."},
+                    status=status.HTTP_200_OK)
 
 
 # ============================================================
-# 🧾 GET PROFILE DETAILS
+# 📄 GET PROFILE
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_profile(request):
-    """
-    Return the current user's profile details.
-    """
     user = request.user
-    profile = getattr(user, "profile", None)
+    profile = user.profile
     points, _ = KudiPoints.objects.get_or_create(user=user)
 
-    return Response(
-        {
-            "username": user.username,
-            "email": user.email,
-            "phone_number": getattr(profile, "phone_number", ""),
-            "bio": getattr(profile, "bio", ""),
-            "profile_picture": (
-                profile.profile_picture.url
-                if getattr(profile, "profile_picture", None)
-                else None
-            ),
-            "is_verified_partner": getattr(
-                profile, "is_verified_partner", False
-            ),
-            "is_vendor": getattr(profile, "is_vendor", False),
-            "social_followers": getattr(profile, "social_followers", 0),
-            "video_review_links": getattr(profile, "video_review_links", []),
-            "partner_application_status": getattr(
-                profile, "partner_application_status", "none"
-            ),
-            "points_balance": float(points.balance),
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response({
+        "username": user.username,
+        "email": user.email,
+        "phone_number": profile.phone_number,
+        "bio": profile.bio,
+        "profile_picture": profile.profile_picture.url if profile.profile_picture else None,
+        "is_verified_partner": profile.is_verified_partner,
+        "is_vendor": profile.is_vendor,
+        "social_media_platform": profile.social_media_platform,
+        "social_media_handle": profile.social_media_handle,
+        "social_followers": profile.social_followers,
+        "video_review_links": profile.video_review_links,
+        "partner_application_status": profile.partner_application_status,
+        "points_balance": float(points.balance),
+    })
 
 
 # ============================================================
-# 🏆 GET USER POINTS BALANCE (simple)
+# ⭐ GET KUDI POINTS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_points(request):
-    """
-    Return only the user's KudiPoints balance.
-    """
     points, _ = KudiPoints.objects.get_or_create(user=request.user)
-    return Response({"points": float(points.balance)}, status=status.HTTP_200_OK)
+    return Response({"points": float(points.balance)})
 
 
 # ============================================================
-# 💎 GET KUDI POINTS BALANCE (with cedi value)
-# ============================================================
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def get_kudi_points(request):
-    """
-    Return the current user's KudiPoints balance.
-    """
-    user = request.user
-    points, _ = KudiPoints.objects.get_or_create(user=user)
-
-    return Response(
-        {
-            "username": user.username,
-            "points_balance": float(points.balance),
-            "points_value_cedis": round(float(points.balance) / 10, 2),  # 10 pts = ₵1
-            "last_updated": points.updated_at,
-        },
-        status=status.HTTP_200_OK,
-    )
-
-
-# ============================================================
-# 🤝 PARTNER STATUS ENDPOINT
+# 🤝 PARTNER STATUS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def partner_status(request):
-    """
-    Return full partner eligibility + application status.
-    """
     user = request.user
     profile = user.profile
 
-    # 1️⃣ KYC requirement
+    # KYC
     kyc = getattr(user, "kyc_profile", None)
     kyc_status = kyc.status if kyc else "Missing"
 
-    # 2️⃣ Total purchases requirement (PAID orders only)
+    # Purchases
     total_spent = (
         Order.objects.filter(user=user, status=Order.Status.PAID)
-        .aggregate(Sum("total_amount"))["total_amount__sum"]
-        or 0
+        .aggregate(Sum("total_amount"))["total_amount__sum"] or 0
     )
-    meets_spend_requirement = float(total_spent) >= 500
+    meets_spend_requirement = total_spent >= 500
 
-    # 3️⃣ Social followers requirement
-    social_followers = getattr(profile, "social_followers", 0)
-    meets_social_requirement = social_followers >= 1000
+    # Social followers
+    meets_social_requirement = profile.social_followers >= 1000
 
-    # 4️⃣ Video review requirement
-    video_links = getattr(profile, "video_review_links", []) or []
-    has_video_review = len(video_links) > 0
+    # Video review
+    has_video_review = len(profile.video_review_links) > 0
 
-    # 5️⃣ Can apply?
     can_apply = (
         kyc_status == "Approved"
         and meets_spend_requirement
         and meets_social_requirement
         and has_video_review
-        and not profile.is_verified_partner
         and profile.partner_application_status not in ["pending", "approved"]
     )
 
-    return Response(
-        {
-            "is_verified_partner": profile.is_verified_partner,
-            "application_status": profile.partner_application_status,
-            "kyc_status": kyc_status,
-            "total_spent": float(total_spent),
-            "meets_spend_requirement": meets_spend_requirement,
-            "social_followers": social_followers,
-            "meets_social_requirement": meets_social_requirement,
-            "video_review_links": video_links,
-            "has_video_review": has_video_review,
-            "can_apply": can_apply,
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response({
+        "is_verified_partner": profile.is_verified_partner,
+        "application_status": profile.partner_application_status,
+        "kyc_status": kyc_status,
+        "total_spent": float(total_spent),
+        "meets_spend_requirement": meets_spend_requirement,
+        "social_followers": profile.social_followers,
+        "meets_social_requirement": meets_social_requirement,
+        "video_review_links": profile.video_review_links,
+        "has_video_review": has_video_review,
+        "can_apply": can_apply,
+    })
 
 
 # ============================================================
@@ -315,229 +237,157 @@ def partner_status(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def apply_partner(request):
-    """
-    User submits application to become a verified partner.
-    We re-check eligibility and then mark application as pending.
-    """
     user = request.user
     profile = user.profile
 
     if profile.is_verified_partner:
-        return Response(
-            {"error": "You are already a verified partner."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Already a verified partner."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     if profile.partner_application_status == "pending":
-        return Response(
-            {"error": "You already have an application under review."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Application already pending."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    # Use same logic as partner_status
+    # Eligibility checks
     kyc = getattr(user, "kyc_profile", None)
     kyc_status = kyc.status if kyc else "Missing"
 
     total_spent = (
         Order.objects.filter(user=user, status=Order.Status.PAID)
-        .aggregate(Sum("total_amount"))["total_amount__sum"]
-        or 0
-    )
-    meets_spend_requirement = float(total_spent) >= 500
-
-    social_followers = getattr(profile, "social_followers", 0)
-    meets_social_requirement = social_followers >= 1000
-
-    video_links = getattr(profile, "video_review_links", []) or []
-    has_video_review = len(video_links) > 0
-
-    can_apply = (
-        kyc_status == "Approved"
-        and meets_spend_requirement
-        and meets_social_requirement
-        and has_video_review
+        .aggregate(Sum("total_amount"))["total_amount__sum"] or 0
     )
 
-    if not can_apply:
+    meets_spend_requirement = total_spent >= 500
+    meets_social_requirement = profile.social_followers >= 1000
+    has_video_review = len(profile.video_review_links) > 0
+
+    if not (kyc_status == "Approved"
+            and meets_spend_requirement
+            and meets_social_requirement
+            and has_video_review):
         return Response(
-            {
-                "error": "You do not meet all requirements yet.",
-                "kyc_status": kyc_status,
-                "total_spent": float(total_spent),
-                "social_followers": social_followers,
-                "video_review_links": video_links,
-            },
+            {"error": "You do not meet all requirements yet."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Set pending
     profile.partner_application_status = "pending"
-    profile.save(update_fields=["partner_application_status"])
+    profile.save()
 
-    return Response(
-        {
-            "message": "Your application has been submitted and will be reviewed by the Kudiway team.",
-            "application_status": profile.partner_application_status,
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response({
+        "message": "Your application has been submitted and is under review.",
+        "application_status": "pending",
+    })
 
 
 # ============================================================
-# ✅ ADMIN: LIST PENDING PARTNERS
+# 🔐 ADMIN — LIST PENDING PARTNERS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAdminUser])
 def pending_partners(request):
-    """
-    Admin-only: list all users with pending partner applications.
-    Used by AdminDashboardScreen.
-    """
     users = User.objects.filter(profile__partner_application_status="pending")
+    data = [{
+        "id": u.id,
+        "username": u.username,
+        "email": u.email,
+        "followers": u.profile.social_followers,
+    } for u in users]
 
-    data = []
-    for u in users:
-        p = u.profile
-        data.append(
-            {
-                "id": u.id,
-                "username": u.username,
-                "email": u.email,
-                "social_followers": p.social_followers,
-                "partner_application_status": p.partner_application_status,
-            }
-        )
-
-    return Response(data, status=status.HTTP_200_OK)
+    return Response(data)
 
 
 # ============================================================
-# ✅ ADMIN: APPROVE PARTNER (with email + in-app notification)
+# 🔐 ADMIN — APPROVE PARTNER
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAdminUser])
 def approve_partner(request, user_id):
-    """
-    Admin endpoint to approve a user as a verified partner.
-    Also sends the user an email + in-app notification.
-    """
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response(
-            {"error": "User not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"error": "User not found."},
+                        status=status.HTTP_404_NOT_FOUND)
 
     profile = user.profile
     profile.is_verified_partner = True
     profile.partner_application_status = "approved"
-    profile.save(update_fields=["is_verified_partner", "partner_application_status"])
+    profile.save()
 
-    # ✉️ Send email notification (if user has email)
+    # Email
     if user.email:
-        subject = "You’ve been approved as a Kudiway Partner"
-        message = (
-            f"Hi {user.username},\n\n"
-            "Congratulations! Your application to become a verified Kudiway Partner has been approved.\n\n"
-            "You can now access your KPartner Hub in the Kudiway app, create resell listings, "
-            "and start earning from your sales.\n\n"
-            "Thank you for building with Kudiway.\n\n"
-            "— Kudiway Team"
-        )
-        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@kudiway.com")
-
         try:
             send_mail(
-                subject,
-                message,
-                from_email,
+                "Kudiway Partner — Approved!",
+                f"Hi {user.username}, your Kudiway Partner application has been approved.",
+                settings.DEFAULT_FROM_EMAIL,
                 [user.email],
                 fail_silently=True,
             )
-        except Exception:
+        except:
             pass
 
-    # 🔔 In-app notification
+    # In-app notification
     Notification.objects.create(
         user=user,
         title="Partner Application Approved",
-        body=(
-            "Congratulations! Your Kudiway Partner application has been approved. "
-            "Open the app to access your Partner Hub and start reselling."
-        ),
+        body="Congratulations! You are now a verified Kudiway Partner.",
         data={"type": "PARTNER_APPROVED"},
     )
 
-    return Response(
-        {
-            "message": f"{user.username} has been approved as a Kudiway Partner.",
-            "user_id": user.id,
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response({"message": "Partner approved."})
 
 
 # ============================================================
-# ❌ ADMIN: REJECT PARTNER (with email + in-app notification)
+# 🔐 ADMIN — REJECT PARTNER
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAdminUser])
 def reject_partner(request, user_id):
-    """
-    Admin endpoint to reject a user's partner application.
-    """
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response(
-            {"error": "User not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"error": "User not found."},
+                        status=status.HTTP_404_NOT_FOUND)
 
     profile = user.profile
     profile.is_verified_partner = False
     profile.partner_application_status = "rejected"
-    profile.save(update_fields=["is_verified_partner", "partner_application_status"])
+    profile.save()
 
-    # ✉️ Email (optional)
+    # Email
     if user.email:
-        subject = "Update on your Kudiway Partner application"
-        message = (
-            f"Hi {user.username},\n\n"
-            "Thank you for applying to become a Kudiway Partner.\n\n"
-            "At this time, your application was not approved. "
-            "You are welcome to improve your profile (purchases, social reach, and product reviews) "
-            "and re-apply in the future.\n\n"
-            "Thank you for your interest in Kudiway.\n\n"
-            "— Kudiway Team"
-        )
-        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@kudiway.com")
         try:
             send_mail(
-                subject,
-                message,
-                from_email,
+                "Kudiway Partner — Application Update",
+                f"Hi {user.username}, unfortunately your application was not approved.",
+                settings.DEFAULT_FROM_EMAIL,
                 [user.email],
                 fail_silently=True,
             )
-        except Exception:
+        except:
             pass
 
-    # 🔔 In-app notification
     Notification.objects.create(
         user=user,
-        title="Partner Application Update",
-        body=(
-            "Your Kudiway Partner application was not approved this time. "
-            "You can improve your profile and re-apply later."
-        ),
+        title="Partner Application Rejected",
+        body="Your Kudiway Partner application was not approved.",
         data={"type": "PARTNER_REJECTED"},
     )
 
-    return Response(
-        {
-            "message": f"{user.username}'s application has been rejected.",
-            "user_id": user.id,
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response({"message": "Partner rejected."})
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_kudi_points(request):
+    user = request.user
+
+    # Import your model here to avoid circular imports
+    from .models import KudiPoints
+
+    points, created = KudiPoints.objects.get_or_create(user=user)
+
+    return Response({
+        "current_points": points.balance,
+        "lifetime_earned": points.lifetime_earned,
+        "lifetime_spent": points.lifetime_spent,
+    }, status=200)
