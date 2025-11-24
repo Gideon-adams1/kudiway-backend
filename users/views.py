@@ -391,3 +391,18 @@ def get_kudi_points(request):
         "lifetime_earned": points.lifetime_earned,
         "lifetime_spent": points.lifetime_spent,
     }, status=200)
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_status(request):
+    user = request.user
+    return Response(
+        {
+            "is_staff": user.is_staff,
+            "is_superuser": user.is_superuser,
+            "role": "admin" if (user.is_staff or user.is_superuser) else "user",
+        }
+    )
