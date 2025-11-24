@@ -483,3 +483,25 @@ def list_all_orders(request):
         )
 
     return Response(data, status=status.HTTP_200_OK)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_purchased_items(request):
+    """
+    Returns a flat list of ALL individual items the user purchased,
+    across all orders.
+    """
+    items = OrderItem.objects.filter(order__user=request.user).order_by("-id")
+
+    data = [
+        {
+            "id": item.id,
+            "order_id": item.order.id,
+            "product_name": item.product_name_snapshot,
+            "image": item.product_image_snapshot,
+            "price": float(item.price),
+            "quantity": item.quantity,
+        }
+        for item in items
+    ]
+
+    return Response(data, status=200)
