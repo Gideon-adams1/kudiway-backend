@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-
 from .models import (
     VideoReview,
     VideoLike,
@@ -15,12 +14,18 @@ User = get_user_model()
 
 
 # ------------------------------
-# USER SERIALIZER (LIGHT VERSION)
+# USER SERIALIZER
 # ------------------------------
 class UserMiniSerializer(serializers.ModelSerializer):
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username"]  # Add avatar later if you want
+        fields = ["id", "username", "avatar"]
+
+    def get_avatar(self, obj):
+        # Add real avatar later when your user model has it
+        return "https://ui-avatars.com/api/?name={}".format(obj.username)
 
 
 # ------------------------------
@@ -51,36 +56,23 @@ class VideoCommentSerializer(serializers.ModelSerializer):
 
 
 # ------------------------------
-# LIKE SERIALIZER
-# ------------------------------
-class VideoLikeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = VideoLike
-        fields = ["id", "user", "video", "created_at"]
-
-
-# ------------------------------
-# SAVE SERIALIZER
-# ------------------------------
-class VideoSaveSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = VideoSave
-        fields = ["id", "user", "video", "created_at"]
-
-
-# ------------------------------
-# VIDEO REVIEW SERIALIZER (MAIN)
+# VIDEO REVIEW SERIALIZER
 # ------------------------------
 class VideoReviewSerializer(serializers.ModelSerializer):
     user = UserMiniSerializer(read_only=True)
+
+    # nested hashtags
     hashtags = HashtagSerializer(many=True, read_only=True)
 
-    # For upload (only accept hashtag list, not full objects)
+    # For upload
     hashtag_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        write_only=True,
-        required=False,
+        child=serializers.IntegerField(), write_only=True, required=False
     )
+
+    # FIXED FIELDS
+    product_id = serializers.SerializerMethodField()
+    product_name = serializers.SerializerMethodField()
+    product_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = VideoReview
@@ -92,57 +84,77 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "caption",
             "location",
             "duration_seconds",
+
+            # PRODUCT INFO (auto-filled)
             "product_id",
             "product_name",
             "product_image_url",
+
+            # social counters
             "likes_count",
             "comments_count",
             "views_count",
             "saves_count",
             "shares_count",
+
             "is_public",
             "is_featured",
             "created_at",
+
             "hashtags",
             "hashtag_ids",
         ]
         read_only_fields = [
+            "user",
             "likes_count",
             "comments_count",
             "views_count",
             "saves_count",
             "shares_count",
             "created_at",
-            "user",
         ]
 
-    # Attach hashtags on create
+    # --------------------------
+    # ATTACH HASHTAGS ON CREATE
+    # --------------------------
     def create(self, validated_data):
         hashtag_ids = validated_data.pop("hashtag_ids", [])
-        video = VideoReview.objects.create(**validated_data)
+        review = VideoReview.objects.create(**validated_data)
 
         if hashtag_ids:
-            video.hashtags.set(hashtag_ids)
+            review.hashtags.set(hashtag_ids)
 
-        return video
+        return review
 
+    # --------------------------
+    # AUTO PRODUCT FIELDS
+    # --------------------------
+    def get_product_id(self, obj):
+        return obj.product_id
 
-# ------------------------------
-# VIEW SERIALIZER
-# ------------------------------
-class VideoViewSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = VideoView
-        fields = ["id", "user", "video", "created_at"]
+    def get_product_name(self, obj):
+        if obj.product_name:
+            return obj.product_name
+        if obj.product:
+            return obj.product.name
+        return None
 
+    def get_product_image_url(self, obj):
+        """
+        Priority:
+        1. Explicit snapshot saved during upload
+        2. Product.image from Product model
+        3. None
+        """
+        # If already stored snapshot
+        if obj.product_image_url:
+            return obj.product_image_url
 
-# ------------------------------
-# FOLLOW SERIALIZER
-# ------------------------------
-class UserFollowSerializer(serializers.ModelSerializer):
-    follower = UserMiniSerializer(read_only=True)
-    following = UserMiniSerializer(read_only=True)
+        # If product still exists, pull image
+        if obj.product and getattr(obj.product, "image", None):
+            try:
+                return obj.product.image.url
+            except:
+                return None
 
-    class Meta:
-        model = UserFollow
-        fields = ["id", "follower", "following", "created_at"]
+        return None
