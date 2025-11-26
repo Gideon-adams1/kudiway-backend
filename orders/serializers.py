@@ -254,76 +254,32 @@ class OrderItemSerializer(serializers.ModelSerializer):
 # ============================================================
 # 💳 ORDER SERIALIZER
 # ============================================================
-class OrderSerializer(serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True, read_only=True)
-    vendor_name = serializers.CharField(
-        source="vendor.username", read_only=True, default=None
-    )
-    user_name = serializers.CharField(
-        source="user.username", read_only=True
-    )
-    partner_name = serializers.CharField(
-        source="partner.username", read_only=True, default=None
-    )
-    total_points_earned = serializers.SerializerMethodField()
-
-    down_payment = serializers.DecimalField(
-        max_digits=12, decimal_places=2, required=False, allow_null=True
-    )
-    interest = serializers.DecimalField(
-        max_digits=12, decimal_places=2, required=False, allow_null=True
-    )
-    credit_amount = serializers.DecimalField(
-        max_digits=12, decimal_places=2, required=False, allow_null=True
-    )
-    due_date = serializers.DateTimeField(
-        required=False, allow_null=True
-    )
+class OrderItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product_name_snapshot", read_only=True)
+    image = serializers.SerializerMethodField()
+    line_total = serializers.SerializerMethodField()
+    partner = serializers.CharField(source="partner.username", read_only=True, default=None)
 
     class Meta:
-        model = Order
+        model = OrderItem
         fields = [
             "id",
-            "user_name",
-            "vendor_name",
-            "partner_name",
-            "subtotal_amount",
-            "total_amount",
-            "payment_method",
-            "status",
-            "note",
-            "down_payment",
-            "interest",
-            "credit_amount",
-            "due_date",
-            "created_at",
-            "updated_at",
-            "items",
-            "total_points_earned",
-        ]
-        read_only_fields = [
-            "id",
-            "user_name",
-            "vendor_name",
-            "partner_name",
-            "subtotal_amount",
-            "total_amount",
-            "status",
-            "created_at",
-            "updated_at",
-            "total_points_earned",
+            "order",
+            "product_id",     # ⭐ FIXED — IMPORTANT
+            "product_name",
+            "image",
+            "price",
+            "quantity",
+            "line_total",
+            "partner",
         ]
 
-    def get_total_points_earned(self, obj):
-        """
-        Partner resale points:
-        - profit = (resale price - base product price)
-        - 10 points per ₵1 profit
-        """
-        total_points = 0
-        for item in obj.items.all():
-            if item.partner and getattr(item, "product", None):
-                base_price = getattr(item.product, "price", Decimal("0"))
-                profit = max(Decimal("0"), item.price - base_price)
-                total_points += int(profit * 10)
-        return total_points
+    def get_image(self, obj):
+        request = self.context.get("request")
+        if obj.product_image_snapshot:
+            return build_full_url(request, obj.product_image_snapshot)
+        return None
+
+    def get_line_total(self, obj):
+        return obj.price * obj.quantity
