@@ -494,22 +494,20 @@ from .models import OrderItem
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def purchased_items(request):
-    """
-    Return purchased items in EXACT format needed by UploadReviewScreen.
-    """
-    items = OrderItem.objects.filter(order__user=request.user).select_related(
-        "product", "order"
-    )
+    user = request.user
+
+    items = OrderItem.objects.filter(order__user=user).order_by("-id")
 
     results = []
 
     for item in items:
         results.append({
-            "id": item.id,                                 # order item ID
-            "order_id": item.order.id,                     # order number
-            "product_id": item.product.id if item.product else None,    # REAL product ID
-            "product_name": item.product_name_snapshot,    # snapshot name
-            "image": item.product_image_snapshot,          # snapshot image
+            "id": item.id,                      # 🔥 UNIQUE fallback ID
+            "order_id": item.order_id,
+            "product_id": item.product.id if item.product else None,
+            "review_product_id": item.id,       # 🔥 ALWAYS EXISTS
+            "product_name": item.product_name_snapshot,
+            "image": item.product_image_snapshot,
             "quantity": item.quantity,
             "price": str(item.price),
         })
