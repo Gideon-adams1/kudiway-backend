@@ -41,6 +41,8 @@ urlpatterns = [
     path("checkout/<str:ref_code>/", views.referral_checkout, name="referral_checkout"),
     path("my-listings/", my_listings),
     path("all/", views.list_all_orders, name="orders-all"),
-    path("purchased-items/", views.get_purchased_items, name="get_purchased_items"),
+    path("purchased-items/", views.purchased_items, name="purchased_items"),
+
+    
 
 ]
