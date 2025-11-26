@@ -483,25 +483,35 @@ def list_all_orders(request):
         )
 
     return Response(data, status=status.HTTP_200_OK)
+# orders/views.py
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from .models import OrderItem
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def get_purchased_items(request):
+def purchased_items(request):
     """
-    Returns a flat list of ALL individual items the user purchased,
-    across all orders.
+    Return purchased items in EXACT format needed by UploadReviewScreen.
     """
-    items = OrderItem.objects.filter(order__user=request.user).order_by("-id")
+    items = OrderItem.objects.filter(order__user=request.user).select_related(
+        "product", "order"
+    )
 
-    data = [
-        {
-            "id": item.id,
-            "order_id": item.order.id,
-            "product_name": item.product_name_snapshot,
-            "image": item.product_image_snapshot,
-            "price": float(item.price),
+    results = []
+
+    for item in items:
+        results.append({
+            "id": item.id,                                 # order item ID
+            "order_id": item.order.id,                     # order number
+            "product_id": item.product.id if item.product else None,    # REAL product ID
+            "product_name": item.product_name_snapshot,    # snapshot name
+            "image": item.product_image_snapshot,          # snapshot image
             "quantity": item.quantity,
-        }
-        for item in items
-    ]
+            "price": str(item.price),
+        })
 
-    return Response(data, status=200)
+    return Response(results)
