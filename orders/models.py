@@ -242,8 +242,14 @@ class OrderItem(models.Model):
     )
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=12, decimal_places=2)
+
+    # snapshots
     product_name_snapshot = models.CharField(max_length=200, blank=True, default="")
     product_image_snapshot = models.URLField(blank=True, default="")
+
+    # ⭐ NEW — REQUIRED FOR VIDEO REVIEWS
+    review_product_id = models.IntegerField(null=True, blank=True)
+
     partner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -252,28 +258,20 @@ class OrderItem(models.Model):
         related_name="partner_order_items",
     )
 
-    def line_total(self):
-        return self.price * self.quantity
-
     def save(self, *args, **kwargs):
+        # snapshot name
         if not self.product_name_snapshot and self.product:
-            self.product_name_snapshot = getattr(self.product, "name", str(self.product))
+            self.product_name_snapshot = getattr(self.product, "name", "")
 
+        # snapshot image
         if not self.product_image_snapshot and self.product:
-            img = getattr(self.product, "image", "")
-            if img:
-                try:
-                    self.product_image_snapshot = str(img.url).replace("http://", "https://")
-                except Exception:
-                    if isinstance(img, str):
-                        if img.startswith("http"):
-                            self.product_image_snapshot = img.replace("http://", "https://")
-                        elif len(img) < 100 and "/" not in img:
-                            self.product_image_snapshot = (
-                                f"https://res.cloudinary.com/dmpymbirt/image/upload/{img}.jpg"
-                            )
+            try:
+                self.product_image_snapshot = str(self.product.image.url)
+            except:
+                pass
+
+        # ⭐ SAVE product.id FOR REVIEW SCREEN
+        if self.product and not self.review_product_id:
+            self.review_product_id = self.product.id
 
         super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.product_name_snapshot or self.product} ×{self.quantity}"
