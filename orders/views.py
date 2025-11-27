@@ -505,7 +505,7 @@ def purchased_items(request):
             "id": item.id,                      # 🔥 UNIQUE fallback ID
             "order_id": item.order_id,
             "product_id": item.product.id if item.product else None,
-            "review_product_id": item.id,       # 🔥 ALWAYS EXISTS
+            "review_product_id": item.review_product_id,      # 🔥 ALWAYS EXISTS
             "product_name": item.product_name_snapshot,
             "image": item.product_image_snapshot,
             "quantity": item.quantity,
