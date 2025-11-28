@@ -29,7 +29,6 @@ from .serializers import ProductSerializer, PartnerListingSerializer
 # 💵 TRANSACTION LOGGER
 # ============================================================
 def log_transaction(user, transaction_type, amount, description=""):
-    """Safely create a transaction record."""
     try:
         Transaction.objects.create(
             user=user,
@@ -48,16 +47,13 @@ def log_transaction(user, transaction_type, amount, description=""):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def list_products(request):
-    """List store products."""
     try:
         products = Product.objects.all().order_by("-created_at")
         serializer = ProductSerializer(products, many=True, context={"request": request})
-        print(f"✅ Loaded {len(products)} products.")
         return Response(serializer.data, status=200)
     except Exception as e:
-        print("❌ ERROR listing products:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to load store products."}, status=500)
+        print("❌ list_products:", e)
+        return Response({"error": "Failed to load store products"}, status=500)
 
 
 # ============================================================
@@ -66,33 +62,31 @@ def list_products(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def get_product(request, pk):
-    """Retrieve a single product or partner listing."""
     try:
         product = Product.objects.get(pk=pk)
         serializer = ProductSerializer(product, context={"request": request})
-        return Response(serializer.data, status=200)
+        return Response(serializer.data)
     except Product.DoesNotExist:
-        try:
-            listing = PartnerListing.objects.get(pk=pk)
-            serializer = PartnerListingSerializer(listing, context={"request": request})
-            return Response(serializer.data, status=200)
-        except PartnerListing.DoesNotExist:
-            return Response({"error": "Product not found."}, status=404)
+        pass
+
+    try:
+        listing = PartnerListing.objects.get(pk=pk)
+        serializer = PartnerListingSerializer(listing, context={"request": request})
+        return Response(serializer.data)
+    except PartnerListing.DoesNotExist:
+        return Response({"error": "Product not found"}, status=404)
     except Exception as e:
-        print("❌ ERROR get_product:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to fetch product."}, status=500)
+        print("❌ get_product:", e)
+        return Response({"error": "Failed to fetch product"}, status=500)
 
 
 # ============================================================
-# 🧾 CREATE ORDER (Wallet + BNPL)
+# 🧾 CREATE ORDER
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_order(request):
     user = request.user
-    print(f"🧾 Creating order for {user.username}")
-
     wallet, _ = Wallet.objects.get_or_create(user=user)
     points_wallet, _ = KudiPoints.objects.get_or_create(user=user)
 
@@ -101,7 +95,7 @@ def create_order(request):
     payment_method = data.get("payment_method", "wallet")
 
     if not items:
-        return Response({"error": "No items provided."}, status=400)
+        return Response({"error": "No items provided"}, status=400)
 
     try:
         total_amount = sum(
@@ -109,31 +103,26 @@ def create_order(request):
             for i in items
         )
     except Exception:
-        return Response({"error": "Invalid item price or quantity."}, status=400)
+        return Response({"error": "Invalid price or quantity"}, status=400)
 
-    usable_points_cedis = min(points_wallet.balance / Decimal("10"), total_amount)
-    points_to_deduct = usable_points_cedis * Decimal("10")
+    usable_points = min(points_wallet.balance / Decimal("10"), total_amount)
+    points_to_deduct = usable_points * Decimal("10")
 
-    # WALLET PAYMENT
+    # ---------------- WALLET PAYMENT ----------------
     if payment_method == "wallet":
-        total_after_points = total_amount - usable_points_cedis
+        amount_after_points = total_amount - usable_points
 
-        if wallet.balance < total_after_points:
-            return Response({"error": "Insufficient wallet balance."}, status=400)
+        if wallet.balance < amount_after_points:
+            return Response({"error": "Insufficient wallet balance"}, status=400)
 
-        # Deduct points
         if points_to_deduct > 0:
             try:
                 points_wallet.redeem_points(points_to_deduct)
-            except Exception:
+            except:
                 pass
 
-        wallet.balance -= total_after_points
+        wallet.balance -= amount_after_points
         wallet.save()
-
-        log_transaction(user, "wallet_purchase", total_after_points, "Purchase via wallet")
-        if usable_points_cedis > 0:
-            log_transaction(user, "points_used", usable_points_cedis, f"Used {points_to_deduct} pts")
 
         order = Order.objects.create(
             user=user,
@@ -141,10 +130,9 @@ def create_order(request):
             total_amount=total_amount,
             payment_method="wallet",
             status="paid",
-            note=f"₵{usable_points_cedis:.2f} from points, ₵{total_after_points:.2f} from wallet.",
         )
 
-    # CREDIT (BNPL)
+    # ---------------- CREDIT (BNPL) ----------------
     elif payment_method == "credit":
         down_payment = total_amount * Decimal("0.30")
         remaining = total_amount - down_payment
@@ -152,17 +140,14 @@ def create_order(request):
         total_credit = remaining + interest
 
         if wallet.balance < down_payment:
-            return Response({"error": "Insufficient wallet balance for downpayment."}, status=400)
+            return Response({"error": "Insufficient wallet balance for downpayment"}, status=400)
 
         if wallet.credit_balance + total_credit > wallet.credit_limit:
-            return Response({"error": "Credit limit exceeded."}, status=400)
+            return Response({"error": "Credit limit exceeded"}, status=400)
 
         wallet.balance -= down_payment
         wallet.credit_balance += total_credit
         wallet.save()
-
-        log_transaction(user, "credit_downpayment", down_payment, "BNPL downpayment")
-        log_transaction(user, "credit_purchase", total_credit, "BNPL total")
 
         order = Order.objects.create(
             user=user,
@@ -170,32 +155,31 @@ def create_order(request):
             total_amount=total_amount,
             payment_method="credit",
             status="pending",
-            note=f"30% down ₵{down_payment:.2f}, 5% interest applied.",
         )
 
     else:
-        return Response({"error": "Invalid payment method."}, status=400)
+        return Response({"error": "Invalid payment method"}, status=400)
 
-    # CREATE ORDER ITEMS
+    # ---------------- CREATE ORDER ITEMS ----------------
     for item in items:
         name = item.get("name", "Unnamed Product")
         price = Decimal(str(item.get("price", 0)))
         qty = int(item.get("qty", 1))
-        image = item.get("image", "") or ""
+        image = item.get("image", "")
         partner_id = item.get("partner_id")
 
-        raw_product_id = (
+        raw_pid = (
             item.get("product_id")
             or item.get("productId")
             or item.get("product")
         )
 
         product_obj = None
-        if raw_product_id:
+        if raw_pid:
             try:
-                product_obj = Product.objects.get(id=raw_product_id)
+                product_obj = Product.objects.get(id=raw_pid)
             except Product.DoesNotExist:
-                product_obj = None
+                pass
 
         order_item = OrderItem.objects.create(
             order=order,
@@ -211,14 +195,14 @@ def create_order(request):
                 partner_user = User.objects.get(id=partner_id)
                 order_item.partner = partner_user
                 order_item.save(update_fields=["partner"])
-            except Exception:
+            except:
                 pass
 
     return Response({"message": "Order created"}, status=201)
 
 
 # ============================================================
-# 📜 USER ORDERS — SAFE VERSION
+# 📜 USER ORDERS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -232,17 +216,14 @@ def list_orders(request):
             .order_by("-created_at")
         )
 
-        result = []
+        output = []
 
         for order in orders:
             items_list = []
 
             for item in order.items.all():
 
-                pid = (
-                    item.review_product_id
-                    or (item.product.id if item.product else None)
-                )
+                pid = item.review_product_id or (item.product.id if item.product else None)
 
                 safe_name = (
                     item.product_name_snapshot
@@ -251,10 +232,7 @@ def list_orders(request):
 
                 raw_img = item.product_image_snapshot
                 if not raw_img and item.product and hasattr(item.product.image, "url"):
-                    try:
-                        raw_img = item.product.image.url
-                    except:
-                        raw_img = None
+                    raw_img = getattr(item.product.image, "url", None)
 
                 safe_image = raw_img or "https://via.placeholder.com/200x200.png"
 
@@ -262,7 +240,6 @@ def list_orders(request):
                     {
                         "id": item.id,
                         "product_id": pid,
-                        "review_product_id": pid,
                         "product_name": safe_name,
                         "image": safe_image,
                         "quantity": item.quantity,
@@ -270,7 +247,7 @@ def list_orders(request):
                     }
                 )
 
-            result.append(
+            output.append(
                 {
                     "id": order.id,
                     "status": order.status,
@@ -281,66 +258,66 @@ def list_orders(request):
                 }
             )
 
-        return Response(result, status=200)
+        return Response(output, status=200)
 
     except Exception as e:
-        print("❌ list_orders error:", e)
+        print("❌ list_orders:", e)
         print(traceback.format_exc())
-        return Response(
-            {"error": "Failed to load your orders."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+        return Response({"error": "Failed to load orders"}, status=500)
 
 
 # ============================================================
-# ⭐ MISSING FUNCTION — ADDED BACK
-# 🤝 CREATE PARTNER LISTING
+# ⭐ PARTNER LISTINGS — GET ALL FOR PARTNER
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_partner_listings(request):
+    user = request.user
+    try:
+        listings = PartnerListing.objects.filter(partner=user)
+        serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
+        return Response(serializer.data, status=200)
+    except Exception as e:
+        print("❌ get_partner_listings:", e)
+        return Response({"error": "Failed to load partner listings"}, status=500)
+
+
+# ============================================================
+# ⭐ CREATE PARTNER LISTING
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_partner_listing(request):
-    """
-    Allow verified partners to create or update a resale listing.
-    """
     try:
         user = request.user
         profile = getattr(user, "profile", None)
+
         if not profile or not getattr(profile, "is_verified_partner", False):
-            return Response(
-                {"error": "Only verified partners can create listings."},
-                status=403,
-            )
+            return Response({"error": "Only verified partners can create listings"}, status=403)
 
         product_id = request.data.get("product_id")
         markup_raw = request.data.get("markup", "0.00")
 
         if not product_id:
-            return Response({"error": "product_id is required."}, status=400)
+            return Response({"error": "product_id is required"}, status=400)
 
         try:
             markup = Decimal(str(markup_raw))
-            if markup < 0:
-                return Response({"error": "Markup cannot be negative."}, status=400)
-        except (InvalidOperation, TypeError):
-            return Response({"error": "Invalid markup value."}, status=400)
+        except:
+            return Response({"error": "Invalid markup value"}, status=400)
 
         try:
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
-            return Response({"error": "Product not found."}, status=404)
+            return Response({"error": "Product not found"}, status=404)
 
         listing, created = PartnerListing.objects.get_or_create(
             partner=user,
             product=product,
-            defaults={
-                "markup": markup,
-                "final_price": product.price + markup,
-            },
         )
 
-        if not created:
-            listing.markup = markup
-            listing.final_price = product.price + markup
+        listing.markup = markup
+        listing.final_price = product.price + markup
 
         if not listing.referral_code:
             listing.referral_code = uuid.uuid4().hex[:8]
@@ -349,22 +326,16 @@ def create_partner_listing(request):
         listing.save()
 
         serializer = PartnerListingSerializer(listing, context={"request": request})
-        return Response(
-            {
-                "message": "Listing created successfully!",
-                "listing": serializer.data,
-            },
-            status=201,
-        )
+
+        return Response({"message": "Listing created", "listing": serializer.data}, status=201)
 
     except Exception as e:
-        print("❌ create_partner_listing error:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to create partner listing."}, status=500)
+        print("❌ create_partner_listing:", e)
+        return Response({"error": "Failed to create listing"}, status=500)
 
 
 # ============================================================
-# 🎥 PURCHASED ITEMS → for UploadReviewScreen
+# 🎥 PURCHASED ITEMS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -377,58 +348,43 @@ def purchased_items(request):
         .order_by("-id")
     )
 
-    results = []
+    output = []
 
     for item in items:
-
-        pid = item.review_product_id or (
-            item.product.id if item.product else None
-        )
+        pid = item.review_product_id or (item.product.id if item.product else None)
 
         safe_name = item.product_name_snapshot or (
             item.product.name if item.product else "Unknown Product"
         )
 
-        # ⭐ BEST IMAGE LOGIC
-        image_url = None
+        img = item.product_image_snapshot
+        if not img and item.product and hasattr(item.product.image, "url"):
+            img = getattr(item.product.image, "url", None)
 
-        if item.product_image_snapshot:
-            image_url = item.product_image_snapshot
+        img = img or "https://via.placeholder.com/200x200.png?text=No+Image"
 
-        elif item.product and hasattr(item.product.image, "url"):
-            try:
-                image_url = item.product.image.url
-            except:
-                image_url = None
-
-        if not image_url:
-            image_url = "https://via.placeholder.com/200x200.png?text=No+Image"
-
-        results.append(
+        output.append(
             {
                 "id": item.id,
                 "order_id": item.order_id,
                 "product_id": item.product.id if item.product else None,
                 "review_product_id": pid,
                 "product_name": safe_name,
-                "image": image_url,
+                "image": img,
                 "quantity": item.quantity,
                 "price": str(item.price),
             }
         )
 
-    return Response(results, status=200)
+    return Response(output, status=200)
+
+
 # ============================================================
-# 🔗 REFERRAL PRODUCT API
-# Used when a buyer opens the referral link → returns product details
+# 🔗 REFERRAL PRODUCT LOOKUP
 # ============================================================
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def get_referral_product(request, ref_code):
-    """
-    When someone opens https://kudiway.com/r/<ref_code>
-    → return the partner listing + product info.
-    """
     try:
         listing = PartnerListing.objects.select_related("product", "partner").get(
             referral_code=ref_code
@@ -440,25 +396,17 @@ def get_referral_product(request, ref_code):
         return Response(serializer.data, status=200)
 
     except PartnerListing.DoesNotExist:
-        return Response({"error": "Invalid referral code."}, status=404)
-
+        return Response({"error": "Invalid referral code"}, status=404)
     except Exception as e:
-        print("❌ get_referral_product error:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to load referral product."}, status=500)
+        print("❌ get_referral_product:", e)
+        return Response({"error": "Failed to load referral product"}, status=500)
 
 
 # ============================================================
-# 🔄 REFERRAL CHECKOUT (WEB-FRIENDLY PAGE)
-# Shows a simple page that deep-links into the app
+# 🌐 REFERRAL CHECKOUT LANDING PAGE
 # ============================================================
 @csrf_exempt
 def referral_checkout(request, ref_code):
-    """
-    Render a simple HTML checkout landing page for the referral link.
-    The mobile app can detect the link and deep-link to the store checkout page.
-    """
-
     try:
         listing = PartnerListing.objects.select_related("product").get(
             referral_code=ref_code
@@ -468,6 +416,12 @@ def referral_checkout(request, ref_code):
 
     product = listing.product
 
+    img = ""
+    try:
+        img = product.image.url
+    except:
+        pass
+
     html = f"""
     <html>
         <head>
@@ -476,21 +430,82 @@ def referral_checkout(request, ref_code):
         </head>
         <body style="font-family: Arial; text-align:center; padding:20px;">
             <h2>Buy: {product.name}</h2>
-            <img src="{product.image.url if hasattr(product.image,'url') else ''}"
-                 style="width: 200px; height: 200px; object-fit: cover; border-radius: 12px;" />
+            <img src="{img}" style="width:200px;height:200px;object-fit:cover;border-radius:12px;" />
 
-            <p style="font-size: 20px; margin-top: 20px;">
+            <p style="font-size:20px;margin-top:20px;">
                 Price: <b>₵{listing.final_price}</b>
             </p>
 
             <p>Sold by partner: <b>{listing.partner.username}</b></p>
 
             <a href="kudiway://checkout/{ref_code}"
-               style="padding: 14px 20px; background:#4CAF50; color:white;
-               text-decoration:none; border-radius: 8px; font-size:18px;">
-               Open in Kudiway App
+                style="padding:14px 20px;background:#4CAF50;color:white;
+                text-decoration:none;border-radius:8px;font-size:18px;">
+                Open in Kudiway App
             </a>
         </body>
     </html>
     """
     return HttpResponse(html)
+
+
+# ============================================================
+# 🛒 ADMIN: LIST ALL ORDERS
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAdminUser])
+def list_all_orders(request):
+    try:
+        orders = (
+            Order.objects.all()
+            .prefetch_related("items", "items__product", "user")
+            .order_by("-created_at")
+        )
+
+        output = []
+
+        for order in orders:
+            items_list = []
+            for item in order.items.all():
+
+                pid = item.review_product_id or (item.product.id if item.product else None)
+
+                name = item.product_name_snapshot or (
+                    item.product.name if item.product else "Unknown Product"
+                )
+
+                img = item.product_image_snapshot
+                if not img and item.product and hasattr(item.product.image, "url"):
+                    img = getattr(item.product.image, "url", None)
+
+                img = img or "https://via.placeholder.com/200x200.png"
+
+                items_list.append(
+                    {
+                        "id": item.id,
+                        "product_id": pid,
+                        "product_name": name,
+                        "image": img,
+                        "quantity": item.quantity,
+                        "price": str(item.price),
+                    }
+                )
+
+            output.append(
+                {
+                    "order_id": order.id,
+                    "user": order.user.username,
+                    "status": order.status,
+                    "payment_method": order.payment_method,
+                    "subtotal_amount": str(order.subtotal_amount),
+                    "total_amount": str(order.total_amount),
+                    "created_at": order.created_at,
+                    "items": items_list,
+                }
+            )
+
+        return Response(output, status=200)
+
+    except Exception as e:
+        print("❌ list_all_orders:", e)
+        return Response({"error": "Failed to fetch all orders"}, status=500)
