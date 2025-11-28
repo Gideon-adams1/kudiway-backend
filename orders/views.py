@@ -36,7 +36,6 @@ def log_transaction(user, transaction_type, amount, description=""):
             amount=Decimal(amount),
             description=description,
         )
-        print(f"✅ Transaction logged: {transaction_type} ₵{amount} ({user.username})")
     except Exception as e:
         print("⚠️ Transaction log failed:", e)
 
@@ -110,18 +109,19 @@ def create_order(request):
 
     # ---------------- WALLET PAYMENT ----------------
     if payment_method == "wallet":
-        amount_after_points = total_amount - usable_points
+        total_after_points = total_amount - usable_points
 
-        if wallet.balance < amount_after_points:
+        if wallet.balance < total_after_points:
             return Response({"error": "Insufficient wallet balance"}, status=400)
 
+        # Redeem points
         if points_to_deduct > 0:
             try:
                 points_wallet.redeem_points(points_to_deduct)
             except:
                 pass
 
-        wallet.balance -= amount_after_points
+        wallet.balance -= total_after_points
         wallet.save()
 
         order = Order.objects.create(
@@ -132,7 +132,7 @@ def create_order(request):
             status="paid",
         )
 
-    # ---------------- CREDIT (BNPL) ----------------
+    # ---------------- CREDIT PAYMENT ----------------
     elif payment_method == "credit":
         down_payment = total_amount * Decimal("0.30")
         remaining = total_amount - down_payment
@@ -168,6 +168,7 @@ def create_order(request):
         image = item.get("image", "")
         partner_id = item.get("partner_id")
 
+        # Flexible product id support
         raw_pid = (
             item.get("product_id")
             or item.get("productId")
@@ -190,6 +191,7 @@ def create_order(request):
             product_image_snapshot=image,
         )
 
+        # Assign partner if resale item
         if partner_id:
             try:
                 partner_user = User.objects.get(id=partner_id)
@@ -220,28 +222,28 @@ def list_orders(request):
 
         for order in orders:
             items_list = []
-
             for item in order.items.all():
 
                 pid = item.review_product_id or (item.product.id if item.product else None)
 
-                safe_name = (
+                name = (
                     item.product_name_snapshot
-                    or (item.product.name if item.product else "Unknown Product")
+                    or item.product.name
+                    if item.product else "Unknown Product"
                 )
 
-                raw_img = item.product_image_snapshot
-                if not raw_img and item.product and hasattr(item.product.image, "url"):
-                    raw_img = getattr(item.product.image, "url", None)
-
-                safe_image = raw_img or "https://via.placeholder.com/200x200.png"
+                img = (
+                    item.product_image_snapshot
+                    or (item.product.image.url if item.product and hasattr(item.product.image, "url") else None)
+                    or "https://via.placeholder.com/200x200.png"
+                )
 
                 items_list.append(
                     {
                         "id": item.id,
                         "product_id": pid,
-                        "product_name": safe_name,
-                        "image": safe_image,
+                        "product_name": name,
+                        "image": img,
                         "quantity": item.quantity,
                         "price": str(item.price),
                     }
@@ -262,24 +264,25 @@ def list_orders(request):
 
     except Exception as e:
         print("❌ list_orders:", e)
-        print(traceback.format_exc())
         return Response({"error": "Failed to load orders"}, status=500)
 
 
 # ============================================================
-# ⭐ PARTNER LISTINGS — GET ALL FOR PARTNER
+# ⭐ GET PARTNER LISTINGS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_partner_listings(request):
-    user = request.user
     try:
-        listings = PartnerListing.objects.filter(partner=user)
+        user = request.user
+        listings = PartnerListing.objects.filter(partner=user).order_by("-created_at")
+
         serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
         return Response(serializer.data, status=200)
+
     except Exception as e:
         print("❌ get_partner_listings:", e)
-        return Response({"error": "Failed to load partner listings"}, status=500)
+        return Response({"error": "Failed to load listings"}, status=500)
 
 
 # ============================================================
@@ -302,14 +305,14 @@ def create_partner_listing(request):
             return Response({"error": "product_id is required"}, status=400)
 
         try:
-            markup = Decimal(str(markup_raw))
-        except:
-            return Response({"error": "Invalid markup value"}, status=400)
-
-        try:
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
             return Response({"error": "Product not found"}, status=404)
+
+        try:
+            markup = Decimal(str(markup_raw))
+        except InvalidOperation:
+            return Response({"error": "Invalid markup value"}, status=400)
 
         listing, created = PartnerListing.objects.get_or_create(
             partner=user,
@@ -344,7 +347,7 @@ def purchased_items(request):
 
     items = (
         OrderItem.objects.filter(order__user=user)
-        .select_related("product", "order")
+        .select_related("product")
         .order_by("-id")
     )
 
@@ -353,15 +356,15 @@ def purchased_items(request):
     for item in items:
         pid = item.review_product_id or (item.product.id if item.product else None)
 
-        safe_name = item.product_name_snapshot or (
+        name = item.product_name_snapshot or (
             item.product.name if item.product else "Unknown Product"
         )
 
-        img = item.product_image_snapshot
-        if not img and item.product and hasattr(item.product.image, "url"):
-            img = getattr(item.product.image, "url", None)
-
-        img = img or "https://via.placeholder.com/200x200.png?text=No+Image"
+        img = (
+            item.product_image_snapshot
+            or (item.product.image.url if item.product and hasattr(item.product.image, "url") else None)
+            or "https://via.placeholder.com/200x200.png?text=No+Image"
+        )
 
         output.append(
             {
@@ -369,7 +372,7 @@ def purchased_items(request):
                 "order_id": item.order_id,
                 "product_id": item.product.id if item.product else None,
                 "review_product_id": pid,
-                "product_name": safe_name,
+                "product_name": name,
                 "image": img,
                 "quantity": item.quantity,
                 "price": str(item.price),
@@ -389,11 +392,12 @@ def get_referral_product(request, ref_code):
         listing = PartnerListing.objects.select_related("product", "partner").get(
             referral_code=ref_code
         )
+
         listing.clicks += 1
         listing.save(update_fields=["clicks"])
 
         serializer = PartnerListingSerializer(listing, context={"request": request})
-        return Response(serializer.data, status=200)
+        return Response(serializer.data)
 
     except PartnerListing.DoesNotExist:
         return Response({"error": "Invalid referral code"}, status=404)
@@ -466,19 +470,20 @@ def list_all_orders(request):
 
         for order in orders:
             items_list = []
-            for item in order.items.all():
 
+            for item in order.items.all():
                 pid = item.review_product_id or (item.product.id if item.product else None)
 
-                name = item.product_name_snapshot or (
-                    item.product.name if item.product else "Unknown Product"
+                name = (
+                    item.product_name_snapshot
+                    or (item.product.name if item.product else "Unknown Product")
                 )
 
-                img = item.product_image_snapshot
-                if not img and item.product and hasattr(item.product.image, "url"):
-                    img = getattr(item.product.image, "url", None)
-
-                img = img or "https://via.placeholder.com/200x200.png"
+                img = (
+                    item.product_image_snapshot
+                    or (item.product.image.url if item.product and hasattr(item.product.image, "url") else None)
+                    or "https://via.placeholder.com/200x200.png"
+                )
 
                 items_list.append(
                     {

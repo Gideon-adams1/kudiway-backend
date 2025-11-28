@@ -13,7 +13,7 @@ urlpatterns = [
     # ============================================================
     path("create/", views.create_order, name="create_order"),
     path("user-orders/", views.list_orders, name="list_orders"),
-    path("all/", views.list_all_orders, name="orders-all"),  # ADMIN
+    path("all/", views.list_all_orders, name="orders_all"),  # ADMIN ONLY
 
     # ============================================================
     # 🤝 PARTNER LISTINGS
@@ -22,18 +22,19 @@ urlpatterns = [
     path("my-listings/", views.get_partner_listings, name="get_partner_listings"),
 
     # ============================================================
-    # 🎥 PURCHASED ITEMS
+    # 🎥 PURCHASED ITEMS (FOR Reviews)
     # ============================================================
     path("purchased-items/", views.purchased_items, name="purchased_items"),
 
     # ============================================================
-    # 🔗 REFERRAL HANDLERS
+    # 🔗 REFERRAL LINKS
     # ============================================================
+    # API used by app when a referral link is opened
     path("referral/<str:ref_code>/", views.get_referral_product, name="get_referral_product"),
 
-    # Short link support (for website)
+    # Short URL version for website: https://kudiway.com/r/abc123
     re_path(r"^r/(?P<ref_code>[A-Za-z0-9]+)/$", views.get_referral_product, name="get_referral_product_short"),
 
-    # HTML page for referral checkout (deep link entry)
+    # HTML landing page that deep-links into the app
     path("checkout/<str:ref_code>/", views.referral_checkout, name="referral_checkout"),
 ]

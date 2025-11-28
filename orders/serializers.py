@@ -2,42 +2,60 @@ from decimal import Decimal
 from rest_framework import serializers
 from .models import Order, OrderItem, Product, PartnerListing
 
+
 # ============================================================
-# 🌍 Helper — SAFE & CONSISTENT URL BUILDER
+# 🌍 UNIVERSAL SAFE URL BUILDER
+# Works for CloudinaryField, snapshot strings, relative URLs
 # ============================================================
-def build_full_url(request, image_field):
-    """Return absolute URL or Cloudinary URL for any image payload."""
-    if not image_field:
+def build_full_url(request, image):
+    """
+    Returns a fully qualified image URL.
+    Handles:
+      - CloudinaryField → .url
+      - Regular string URLs → returned as https://
+      - Cloudinary public_id strings → auto-expand
+      - Relative paths → converted via request.build_absolute_uri
+    """
+
+    if not image:
         return None
 
-    # 1️⃣ If CloudinaryField → get `.url`
+    # 1️⃣ CloudinaryField: get the real URL
     try:
-        url = image_field.url
+        url = image.url
     except Exception:
-        url = str(image_field)
+        url = str(image)
 
     if not url:
         return None
 
-    # 2️⃣ If full http/https — normalize to https
+    # 2️⃣ If already full URL:
     if url.startswith("http"):
         return url.replace("http://", "https://")
 
-    # 3️⃣ Cloudinary public ID (short string, no slash)
-    if len(url) < 100 and "/" not in url:
+    # 3️⃣ Cloudinary public ID (no slashes, short)
+    if len(url) < 150 and "/" not in url:
+        # Example: "kdf82kd92" → expand to cloudinary URL
         return f"https://res.cloudinary.com/dmpymbirt/image/upload/{url}.jpg"
 
-    # 4️⃣ Local media fallback
-    return request.build_absolute_uri(url) if request else url
+    # 4️⃣ Local relative path
+    if request:
+        return request.build_absolute_uri(url)
+
+    return url
 
 
 # ============================================================
 # 🛍️ PRODUCT SERIALIZER
+# (Used everywhere: Store, PartnerListing, etc.)
 # ============================================================
 class ProductSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.username", read_only=True)
-    oldPrice = serializers.DecimalField(source="old_price", max_digits=10, decimal_places=2, read_only=True)
+    oldPrice = serializers.DecimalField(
+        source="old_price", max_digits=10, decimal_places=2, read_only=True
+    )
 
+    # 5 images guaranteed
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
@@ -82,26 +100,33 @@ class ProductSerializer(serializers.ModelSerializer):
 
 # ============================================================
 # 🤝 PARTNER LISTING SERIALIZER
+# (Used when someone opens referral link)
 # ============================================================
 class PartnerListingSerializer(serializers.ModelSerializer):
+    partner = serializers.CharField(source="partner.username", read_only=True)
+
+    # Product fields forwarded
     name = serializers.CharField(source="product.name", read_only=True)
     description = serializers.CharField(source="product.description", read_only=True)
     category = serializers.CharField(source="product.category", read_only=True)
     rating = serializers.FloatField(source="product.rating", read_only=True)
-    oldPrice = serializers.DecimalField(source="product.old_price", max_digits=10, decimal_places=2, read_only=True)
-    base_price = serializers.DecimalField(source="product.price", max_digits=10, decimal_places=2, read_only=True)
-    partner = serializers.CharField(source="partner.username", read_only=True)
+    oldPrice = serializers.DecimalField(
+        source="product.old_price", max_digits=10, decimal_places=2, read_only=True
+    )
+    base_price = serializers.DecimalField(
+        source="product.price", max_digits=10, decimal_places=2, read_only=True
+    )
 
+    # Product included as nested serializer
     product = serializers.SerializerMethodField()
     is_resale = serializers.SerializerMethodField()
 
+    # Partner sale images
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
     image4 = serializers.SerializerMethodField()
     image5 = serializers.SerializerMethodField()
-
-    total_profit = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = PartnerListing
@@ -140,30 +165,35 @@ class PartnerListingSerializer(serializers.ModelSerializer):
         return ProductSerializer(obj.product, context=self.context).data
 
     def get_image(self, obj):
-        return build_full_url(self.context.get("request"), getattr(obj.product, "image", None))
+        return build_full_url(self.context.get("request"), obj.product.image)
 
     def get_image2(self, obj):
-        return build_full_url(self.context.get("request"), getattr(obj.product, "image2", None))
+        return build_full_url(self.context.get("request"), obj.product.image2)
 
     def get_image3(self, obj):
-        return build_full_url(self.context.get("request"), getattr(obj.product, "image3", None))
+        return build_full_url(self.context.get("request"), obj.product.image3)
 
     def get_image4(self, obj):
-        return build_full_url(self.context.get("request"), getattr(obj.product, "image4", None))
+        return build_full_url(self.context.get("request"), obj.product.image4)
 
     def get_image5(self, obj):
-        return build_full_url(self.context.get("request"), getattr(obj.product, "image5", None))
+        return build_full_url(self.context.get("request"), obj.product.image5)
 
 
 # ============================================================
-# 🧾 ORDER ITEM SERIALIZER (UPDATED — GUARANTEED IMAGE)
+# 📦 ORDER ITEM SERIALIZER
+# (Used in My Orders, dashboard, etc.)
 # ============================================================
 class OrderItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
-    product_name = serializers.CharField(source="product_name_snapshot", read_only=True)
-    image = serializers.SerializerMethodField()   # Unified image field
+    product_name = serializers.CharField(
+        source="product_name_snapshot", read_only=True
+    )
+    image = serializers.SerializerMethodField()
     line_total = serializers.SerializerMethodField()
-    partner = serializers.CharField(source="partner.username", read_only=True, default=None)
+    partner = serializers.CharField(
+        source="partner.username", read_only=True, default=None
+    )
 
     class Meta:
         model = OrderItem
@@ -183,11 +213,11 @@ class OrderItemSerializer(serializers.ModelSerializer):
     def get_image(self, obj):
         request = self.context.get("request")
 
-        # 1️⃣ First choice: snapshot (guaranteed correct)
+        # 1️⃣ Snapshot FIRST (most accurate)
         if obj.product_image_snapshot:
             return build_full_url(request, obj.product_image_snapshot)
 
-        # 2️⃣ Live product image
+        # 2️⃣ Fallback to product image
         if obj.product and obj.product.image:
             return build_full_url(request, obj.product.image)
 
@@ -198,7 +228,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 
 # ============================================================
-# 💳 ORDER SERIALIZER
+# 🧾 ORDER SERIALIZER
 # ============================================================
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)

@@ -21,9 +21,18 @@ class Product(models.Model):
 
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, null=True)
-    category = models.CharField(max_length=100, choices=CATEGORY_CHOICES, default="Other")
+    category = models.CharField(
+        max_length=100,
+        choices=CATEGORY_CHOICES,
+        default="Other",
+    )
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    old_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    old_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     rating = models.FloatField(default=4.5)
     stock = models.PositiveIntegerField(default=0)
 
@@ -47,20 +56,17 @@ class Product(models.Model):
     @property
     def discount_percent(self):
         if self.old_price and self.old_price > 0:
-            return round(((self.old_price - self.price) / self.old_price) * 100, 1)
+            return round(
+                ((self.old_price - self.price) / self.old_price) * 100, 1
+            )
         return 0
 
     def save(self, *args, **kwargs):
-        # Normalize image URLs to HTTPS
-        for field_name in ["image", "image2", "image3", "image4", "image5"]:
-            field = getattr(self, field_name)
-            if field:
-                try:
-                    url = str(field.url).replace("http://", "https://")
-                    setattr(self, field_name, url)
-                except Exception:
-                    if isinstance(field, str) and field.startswith("http"):
-                        setattr(self, field_name, field.replace("http://", "https://"))
+        """
+        Keep Product.image as a CloudinaryField.
+        URL normalization is now handled in serializers, so we don't
+        overwrite the field with a plain string.
+        """
         super().save(*args, **kwargs)
 
 
@@ -69,10 +75,14 @@ class Product(models.Model):
 # ============================================================
 class PartnerListing(models.Model):
     partner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="partner_listings"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="partner_listings",
     )
     product = models.ForeignKey(
-        "Product", on_delete=models.CASCADE, related_name="partner_products"
+        "Product",
+        on_delete=models.CASCADE,
+        related_name="partner_products",
     )
 
     markup = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -81,7 +91,11 @@ class PartnerListing(models.Model):
     referral_url = models.URLField(blank=True, null=True)
     clicks = models.PositiveIntegerField(default=0)
     sales_count = models.PositiveIntegerField(default=0)
-    total_profit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    total_profit = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
     slug = models.SlugField(unique=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -119,17 +133,46 @@ class Order(models.Model):
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="orders")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="orders",
+    )
     vendor = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="vendor_orders", null=True, blank=True
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="vendor_orders",
+        null=True,
+        blank=True,
     )
     partner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="partner_sales", null=True, blank=True
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="partner_sales",
+        null=True,
+        blank=True,
     )
-    subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    payment_method = models.CharField(max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.WALLET)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+
+    subtotal_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    total_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    payment_method = models.CharField(
+        max_length=10,
+        choices=PaymentMethod.choices,
+        default=PaymentMethod.WALLET,
+    )
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
     note = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -179,36 +222,62 @@ class Order(models.Model):
             for item in self.items.all():
                 if item.partner and item.product:
                     base_price = getattr(item.product, "price", Decimal("0.00"))
-                    profit = max(item.price - base_price, Decimal("0.00")) * item.quantity
+                    unit_profit = max(item.price - base_price, Decimal("0.00"))
+                    line_profit = unit_profit * item.quantity
 
-                    if profit > 0:
+                    if line_profit > 0:
                         listing = PartnerListing.objects.filter(
-                            partner=item.partner, product=item.product
+                            partner=item.partner,
+                            product=item.product,
                         ).first()
                         if listing:
                             listing.sales_count += item.quantity
-                            listing.total_profit += profit
-                            listing.save(update_fields=["sales_count", "total_profit"])
+                            listing.total_profit = (
+                                listing.total_profit or Decimal("0.00")
+                            ) + line_profit
+                            listing.save(
+                                update_fields=["sales_count", "total_profit"]
+                            )
 
 
 # ============================================================
 # 📦 ORDER ITEM MODEL (UPDATED)
 # ============================================================
 class OrderItem(models.Model):
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
     product = models.ForeignKey(
-        Product, on_delete=models.SET_NULL, related_name="order_items", null=True, blank=True
+        Product,
+        on_delete=models.SET_NULL,
+        related_name="order_items",
+        null=True,
+        blank=True,
     )
 
     price = models.DecimalField(max_digits=12, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
 
     # Snapshots
-    product_name_snapshot = models.CharField(max_length=255, blank=True, default="")
-    product_image_snapshot = models.URLField(blank=True, default="")
+    product_name_snapshot = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    product_image_snapshot = models.URLField(
+        blank=True,
+        default="",
+    )
 
     # Used by review system
-    review_product_id = models.CharField(max_length=50, blank=True, null=True)
+    review_product_id = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Stable ID used by the video review system",
+    )
 
     partner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -226,16 +295,17 @@ class OrderItem(models.Model):
         return f"OrderItem #{self.id} — {self.product.name if self.product else 'Unknown'}"
 
     def save(self, *args, **kwargs):
-        # -------------------------------------------------------
-        # Always save product name snapshot
-        # -------------------------------------------------------
-        if self.product:
+        """
+        - If frontend sends snapshots → we KEEP them.
+        - If snapshots are empty but product exists → we FILL them from product.
+        - We always ensure review_product_id is set after first save.
+        """
+        # -------- Name snapshot --------
+        if self.product and not self.product_name_snapshot:
             self.product_name_snapshot = self.product.name
 
-        # -------------------------------------------------------
-        # Always save product image snapshot
-        # -------------------------------------------------------
-        if self.product:
+        # -------- Image snapshot --------
+        if self.product and not self.product_image_snapshot:
             try:
                 url = str(self.product.image.url)
                 if url:
@@ -245,10 +315,12 @@ class OrderItem(models.Model):
 
         super().save(*args, **kwargs)
 
-        # -------------------------------------------------------
-        # Ensure review_product_id always exists
-        # -------------------------------------------------------
+        # -------- Stable review_product_id --------
         if not self.review_product_id:
-            rid = str(self.product.id) if self.product else f"OI-{self.id}"
+            if self.product:
+                rid = str(self.product.id)
+            else:
+                rid = f"OI-{self.id}"
+
             OrderItem.objects.filter(pk=self.pk).update(review_product_id=rid)
             self.review_product_id = rid
