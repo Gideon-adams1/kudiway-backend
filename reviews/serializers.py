@@ -10,12 +10,14 @@ from .models import (
     Hashtag,
 )
 
+from orders.models import Product  # for FK fallback
+
 User = get_user_model()
 
 
-# ------------------------------
-# USER SERIALIZER
-# ------------------------------
+# ============================================================
+# USER MINI SERIALIZER
+# ============================================================
 class UserMiniSerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
 
@@ -24,22 +26,21 @@ class UserMiniSerializer(serializers.ModelSerializer):
         fields = ["id", "username", "avatar"]
 
     def get_avatar(self, obj):
-        # Add real avatar later when your user model has it
-        return "https://ui-avatars.com/api/?name={}".format(obj.username)
+        return f"https://ui-avatars.com/api/?name={obj.username}"
+    
 
-
-# ------------------------------
+# ============================================================
 # HASHTAG SERIALIZER
-# ------------------------------
+# ============================================================
 class HashtagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Hashtag
         fields = ["id", "name", "slug"]
 
 
-# ------------------------------
+# ============================================================
 # COMMENT SERIALIZER
-# ------------------------------
+# ============================================================
 class VideoCommentSerializer(serializers.ModelSerializer):
     user = UserMiniSerializer(read_only=True)
 
@@ -50,29 +51,34 @@ class VideoCommentSerializer(serializers.ModelSerializer):
             "user",
             "text",
             "created_at",
-            "parent",
             "is_deleted",
+            "parent",
         ]
 
 
-# ------------------------------
-# VIDEO REVIEW SERIALIZER
-# ------------------------------
+# ============================================================
+# MAIN VIDEO REVIEW SERIALIZER
+# ============================================================
 class VideoReviewSerializer(serializers.ModelSerializer):
     user = UserMiniSerializer(read_only=True)
+    hashtags = HashtagSerializer(read_only=True, many=True)
 
-    # nested hashtags
-    hashtags = HashtagSerializer(many=True, read_only=True)
-
-    # For upload
+    # For POST
     hashtag_ids = serializers.ListField(
-        child=serializers.IntegerField(), write_only=True, required=False
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False
     )
 
-    # FIXED FIELDS
+    # Computed fields
     product_id = serializers.SerializerMethodField()
     product_name = serializers.SerializerMethodField()
     product_image_url = serializers.SerializerMethodField()
+    review_product_id = serializers.SerializerMethodField()
+
+    # UX helpers
+    is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
 
     class Meta:
         model = VideoReview
@@ -81,21 +87,27 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "user",
             "video_url",
             "thumbnail_url",
+            "thumbnail_time_ms",
             "caption",
             "location",
             "duration_seconds",
 
-            # PRODUCT INFO (auto-filled)
+            # ⭐ Product reference fields
+            "review_product_id",
             "product_id",
             "product_name",
             "product_image_url",
 
-            # social counters
+            # Stats
             "likes_count",
             "comments_count",
             "views_count",
             "saves_count",
             "shares_count",
+
+            # UX
+            "is_liked",
+            "is_saved",
 
             "is_public",
             "is_featured",
@@ -104,7 +116,9 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "hashtags",
             "hashtag_ids",
         ]
+
         read_only_fields = [
+            "id",
             "user",
             "likes_count",
             "comments_count",
@@ -114,9 +128,10 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    # --------------------------
-    # ATTACH HASHTAGS ON CREATE
-    # --------------------------
+
+    # ============================================================
+    # CREATE — PACKAGES HASHTAGS
+    # ============================================================
     def create(self, validated_data):
         hashtag_ids = validated_data.pop("hashtag_ids", [])
         review = VideoReview.objects.create(**validated_data)
@@ -126,31 +141,53 @@ class VideoReviewSerializer(serializers.ModelSerializer):
 
         return review
 
-    # --------------------------
-    # AUTO PRODUCT FIELDS
-    # --------------------------
+
+    # ============================================================
+    # PRODUCT INFO METHODS
+    # ============================================================
+    def get_review_product_id(self, obj):
+        return obj.review_product_id
+
+
     def get_product_id(self, obj):
-        return obj.product_id
+        """
+        Priority:
+        1. Explicit product_id saved on review
+        2. Linked Product FK
+        """
+        if obj.product_id:
+            return obj.product_id
+
+        if obj.product:
+            return obj.product.id
+
+        return None
+
 
     def get_product_name(self, obj):
+        """
+        Priority:
+        1. Snapshot saved during upload
+        2. product FK
+        """
         if obj.product_name:
             return obj.product_name
+
         if obj.product:
             return obj.product.name
+
         return None
+
 
     def get_product_image_url(self, obj):
         """
         Priority:
-        1. Explicit snapshot saved during upload
-        2. Product.image from Product model
-        3. None
+        1. Snapshot saved at upload time (stable)
+        2. Product.image current
         """
-        # If already stored snapshot
         if obj.product_image_url:
             return obj.product_image_url
 
-        # If product still exists, pull image
         if obj.product and getattr(obj.product, "image", None):
             try:
                 return obj.product.image.url
@@ -158,3 +195,20 @@ class VideoReviewSerializer(serializers.ModelSerializer):
                 return None
 
         return None
+
+
+    # ============================================================
+    # UX — Like / Save status
+    # ============================================================
+    def get_is_liked(self, obj):
+        user = self.context["request"].user
+        if not user.is_authenticated:
+            return False
+        return VideoLike.objects.filter(user=user, video=obj).exists()
+
+
+    def get_is_saved(self, obj):
+        user = self.context["request"].user
+        if not user.is_authenticated:
+            return False
+        return VideoSave.objects.filter(user=user, video=obj).exists()

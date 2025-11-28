@@ -6,10 +6,12 @@ from django.utils.text import slugify
 User = settings.AUTH_USER_MODEL
 
 
+# ============================================================
+# 🏷️ HASHTAGS
+# ============================================================
 class Hashtag(models.Model):
     name = models.CharField(max_length=100, unique=True)
     slug = models.SlugField(max_length=120, unique=True, blank=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -24,6 +26,9 @@ class Hashtag(models.Model):
         super().save(*args, **kwargs)
 
 
+# ============================================================
+# 👥 FOLLOW SYSTEM
+# ============================================================
 class UserFollow(models.Model):
     follower = models.ForeignKey(
         User,
@@ -44,9 +49,12 @@ class UserFollow(models.Model):
         return f"{self.follower} → {self.following}"
 
 
+# ============================================================
+# 🎥 VIDEO REVIEW
+# ============================================================
 class VideoReview(models.Model):
     """
-    Core video review object.
+    A user’s video review for a purchased product.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -57,42 +65,65 @@ class VideoReview(models.Model):
         related_name="video_reviews",
     )
 
-    # TODO: Update this import path to match your product model.
-    # Example: from store.models import Product
-    # and then:
-    # product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="video_reviews")
-    #
-    # For now we keep it generic as a placeholder:
-    product_id = models.PositiveIntegerField(null=True, blank=True)
+    # ---------------------------------------------------------
+    # 🔥 Product / OrderItem linking
+    # ---------------------------------------------------------
+    review_product_id = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Matches OrderItem.review_product_id"
+    )
+
+    product = models.ForeignKey(
+        "orders.Product",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="video_reviews",
+    )
+
     product_name = models.CharField(max_length=255, blank=True)
     product_image_url = models.URLField(blank=True)
 
-    video_url = models.URLField()  # Cloudinary / S3 URL
+    # ---------------------------------------------------------
+    # 🎥 Video & thumbnail (Cloudinary)
+    # ---------------------------------------------------------
+    video_url = models.URLField()
     thumbnail_url = models.URLField(blank=True)
     cloudinary_public_id = models.CharField(max_length=255, blank=True)
 
+    thumbnail_time_ms = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Timestamp used when generating thumbnail",
+    )
 
+    # ---------------------------------------------------------
+    # ✏️ Content
+    # ---------------------------------------------------------
     caption = models.TextField(blank=True)
     location = models.CharField(max_length=255, blank=True)
-
     hashtags = models.ManyToManyField(Hashtag, blank=True, related_name="videos")
-
     duration_seconds = models.PositiveIntegerField(default=0)
 
-    # Stats (denormalized for fast access)
+    # ---------------------------------------------------------
+    # 📊 Stats
+    # ---------------------------------------------------------
     likes_count = models.PositiveIntegerField(default=0)
     comments_count = models.PositiveIntegerField(default=0)
     views_count = models.PositiveIntegerField(default=0)
     saves_count = models.PositiveIntegerField(default=0)
     shares_count = models.PositiveIntegerField(default=0)
 
-    # Creator / platform controls
+    # ---------------------------------------------------------
+    # ⚙️ Moderation flags
+    # ---------------------------------------------------------
     is_public = models.BooleanField(default=True)
-    is_approved = models.BooleanField(default=True)  # for moderation
+    is_approved = models.BooleanField(default=True)
     is_featured = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
 
-    # For possible geo / country targeting later
     country_code = models.CharField(max_length=5, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -102,9 +133,12 @@ class VideoReview(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"VideoReview({self.id}) by {self.user}"
+        return f"Review of {self.product_name or 'Unknown'} by {self.user}"
 
 
+# ============================================================
+# ❤️ LIKES
+# ============================================================
 class VideoLike(models.Model):
     user = models.ForeignKey(
         User,
@@ -125,6 +159,9 @@ class VideoLike(models.Model):
         return f"{self.user} ♥ {self.video_id}"
 
 
+# ============================================================
+# 💾 SAVED VIDEOS
+# ============================================================
 class VideoSave(models.Model):
     user = models.ForeignKey(
         User,
@@ -145,12 +182,10 @@ class VideoSave(models.Model):
         return f"{self.user} saved {self.video_id}"
 
 
+# ============================================================
+# 👁️ VIEWS
+# ============================================================
 class VideoView(models.Model):
-    """
-    Lightweight model for tracking views.
-    We can aggregate stats with signals or cronjobs.
-    """
-
     user = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -164,12 +199,14 @@ class VideoView(models.Model):
         related_name="views",
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    # Optional: device, IP hash, etc. for fraud protection later
 
     def __str__(self):
         return f"View: {self.video_id} by {self.user or 'anonymous'}"
 
 
+# ============================================================
+# 💬 COMMENTS
+# ============================================================
 class VideoComment(models.Model):
     video = models.ForeignKey(
         VideoReview,
@@ -184,10 +221,8 @@ class VideoComment(models.Model):
     text = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
-    # Soft delete instead of hard delete
     is_deleted = models.BooleanField(default=False)
 
-    # Optional parent for threaded replies later
     parent = models.ForeignKey(
         "self",
         null=True,
@@ -203,12 +238,15 @@ class VideoComment(models.Model):
         return f"Comment by {self.user} on {self.video_id}"
 
 
+# ============================================================
+# 🚨 REPORTS
+# ============================================================
 class VideoReport(models.Model):
     REASON_CHOICES = [
         ("spam", "Spam / Advertising"),
         ("nudity", "Nudity or sexual content"),
-        ("violence", "Violence or harmful content"),
-        ("fraud", "Scam / Fraud"),
+        ("violence", "Violence / Harmful content"),
+        ("fraud", "Fraud / Scam"),
         ("hate", "Hate speech"),
         ("other", "Other"),
     ]
@@ -225,11 +263,13 @@ class VideoReport(models.Model):
         blank=True,
         related_name="video_reports",
     )
+
     reason = models.CharField(max_length=20, choices=REASON_CHOICES)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
     handled = models.BooleanField(default=False)
     handled_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"Report on {self.video_id} ({self.reason})"
+        return f"Report: {self.video_id} ({self.reason})"
