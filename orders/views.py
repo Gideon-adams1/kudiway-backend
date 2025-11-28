@@ -94,23 +94,6 @@ def get_product(request, pk):
 def create_order(request):
     """
     Handles wallet & credit orders and partner commission tracking.
-
-    Expected payload:
-    {
-      "items": [
-        {
-          "name": "...",
-          "price": 100,
-          "qty": 1,
-          "image": "https://...",
-          "product_id": 3,      # OPTIONAL but recommended
-          "productId": 3,       # (alias)
-          "partner_id": 7       # OPTIONAL (affiliate partner)
-        },
-        ...
-      ],
-      "payment_method": "wallet" | "credit"
-    }
     """
     user = request.user
     print(f"🧾 Creating order for {user.username}")
@@ -242,7 +225,6 @@ def create_order(request):
         image = item.get("image", "") or ""
         partner_id = item.get("partner_id")
 
-        # 🔑 Resolve product reference if frontend sends it
         raw_product_id = (
             item.get("product_id")
             or item.get("productId")
@@ -264,17 +246,14 @@ def create_order(request):
             product_name_snapshot=name,
             product_image_snapshot=image,
         )
-        # OrderItem.save() will automatically set review_product_id
 
-        # Link partner if from referral
         if partner_id:
             try:
                 partner_user = User.objects.get(id=partner_id)
                 order_item.partner = partner_user
                 order_item.save(update_fields=["partner"])
-                print(f"🔗 Linked partner {partner_user.username} to item {name}")
-            except Exception as e:
-                print("⚠️ Failed to link partner:", e)
+            except Exception:
+                pass
 
     return Response({"message": "Order created"}, status=201)
 
@@ -286,9 +265,7 @@ def create_order(request):
 @permission_classes([IsAuthenticated])
 def list_orders(request):
     """
-    Return orders + items for the logged-in user.
-
-    This is what MyOrdersScreen uses → /api/orders/user-orders/
+    Return orders + items for MyOrdersScreen.
     """
     user = request.user
 
@@ -305,42 +282,31 @@ def list_orders(request):
             items_list = []
 
             for item in order.items.all():
-                # MAIN ID FOR REVIEWS
-                safe_pid = (
+
+                pid = (
                     item.review_product_id
                     or (item.product.id if item.product else None)
                 )
 
-                # NAME
                 safe_name = (
                     item.product_name_snapshot
                     or (item.product.name if item.product else "Unknown Product")
                 )
 
-                # IMAGE: handle Cloudinary object OR string OR missing
-                raw_img = item.product_image_snapshot or None
-                if not raw_img and item.product:
+                raw_img = item.product_image_snapshot
+                if not raw_img and item.product and hasattr(item.product.image, "url"):
                     try:
-                        img = item.product.image
-                        # CloudinaryField may return object with .url or a plain string
-                        if hasattr(img, "url"):
-                            raw_img = img.url
-                        else:
-                            raw_img = str(img)
-                    except Exception as e:
-                        print("⚠️ image resolve error in list_orders:", e)
+                        raw_img = item.product.image.url
+                    except:
                         raw_img = None
 
-                safe_image = (
-                    raw_img
-                    or "https://via.placeholder.com/200x200.png?text=No+Image"
-                )
+                safe_image = raw_img or "https://via.placeholder.com/200x200.png"
 
                 items_list.append(
                     {
                         "id": item.id,
-                        "product_id": safe_pid,
-                        "review_product_id": safe_pid,
+                        "product_id": pid,
+                        "review_product_id": pid,
                         "product_name": safe_name,
                         "image": safe_image,
                         "quantity": item.quantity,
@@ -371,328 +337,15 @@ def list_orders(request):
 
 
 # ============================================================
-# 🤝 CREATE PARTNER LISTING
-# ============================================================
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def create_partner_listing(request):
-    """Allow verified partners to create or update a resale listing."""
-    try:
-        user = request.user
-        profile = getattr(user, "profile", None)
-        if not profile or not getattr(profile, "is_verified_partner", False):
-            return Response(
-                {"error": "Only verified partners can create listings."},
-                status=403,
-            )
-
-        product_id = request.data.get("product_id")
-        markup_raw = request.data.get("markup", "0.00")
-
-        if not product_id:
-            return Response({"error": "product_id is required."}, status=400)
-
-        try:
-            markup = Decimal(str(markup_raw))
-            if markup < 0:
-                return Response({"error": "Markup cannot be negative."}, status=400)
-        except (InvalidOperation, TypeError):
-            return Response({"error": "Invalid markup value."}, status=400)
-
-        try:
-            product = Product.objects.get(id=product_id)
-        except Product.DoesNotExist:
-            return Response({"error": "Product not found."}, status=404)
-
-        listing, created = PartnerListing.objects.get_or_create(
-            partner=user,
-            product=product,
-            defaults={
-                "markup": markup,
-                "final_price": product.price + markup,
-            },
-        )
-
-        if not created:
-            listing.markup = markup
-            listing.final_price = product.price + markup
-
-        if not listing.referral_code:
-            listing.referral_code = uuid.uuid4().hex[:8]
-
-        listing.referral_url = f"https://kudiway.com/r/{listing.referral_code}"
-        listing.save()
-
-        serializer = PartnerListingSerializer(listing, context={"request": request})
-        return Response(
-            {
-                "message": "Listing created successfully!",
-                "listing": serializer.data,
-                "redirect_to": "KPartnerHubScreen",
-            },
-            status=201,
-        )
-
-    except Exception as e:
-        print("❌ create_partner_listing error:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to create partner listing."}, status=500)
-
-
-# ============================================================
-# 📋 MY PARTNER LISTINGS
-# ============================================================
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def get_partner_listings(request):
-    """Get all listings for a verified partner."""
-    user = request.user
-    profile = getattr(user, "profile", None)
-    if not profile or not getattr(profile, "is_verified_partner", False):
-        return Response(
-            {"error": "Only verified partners can view listings."},
-            status=403,
-        )
-
-    listings = (
-        PartnerListing.objects.filter(partner=user)
-        .select_related("product")
-        .order_by("-created_at")
-    )
-
-    serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
-    return Response(serializer.data, status=200)
-
-
-# ============================================================
-# 🔗 REFERRAL PRODUCT (API JSON for the app)
-# ============================================================
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def get_referral_product(request, ref_code):
-    """API endpoint for in-app use."""
-    try:
-        listing = (
-            PartnerListing.objects.select_related("product", "partner")
-            .get(referral_code=ref_code)
-        )
-        listing.clicks += 1
-        listing.save(update_fields=["clicks"])
-        serializer = PartnerListingSerializer(listing, context={"request": request})
-        return Response(serializer.data, status=200)
-    except PartnerListing.DoesNotExist:
-        return Response({"error": "Invalid or expired referral code."}, status=404)
-    except Exception as e:
-        print("❌ Referral product error:", e)
-        print(traceback.format_exc())
-        return Response({"error": "Failed to load referral product."}, status=500)
-
-
-# ============================================================
-# 🌐 REFERRAL LANDING PAGE (WEB)
-# ============================================================
-def referral_redirect(request, ref_code):
-    """
-    Handles browser visits to https://kudiway.com/r/<ref_code>
-    Renders referral_landing.html for web users.
-    """
-    try:
-        listing = (
-            PartnerListing.objects.select_related("product", "partner")
-            .get(referral_code=ref_code)
-        )
-        product = listing.product
-        context = {
-            "listing": listing,
-            "product": product,
-            "partner_name": listing.partner.username,
-            # must match your app Linking config: kudiwayapp://r/<code>
-            "deep_link": f"kudiwayapp://r/{ref_code}",
-        }
-        return render(request, "referral_landing.html", context)
-    except PartnerListing.DoesNotExist:
-        return HttpResponse(
-            "<h2>Referral link not found or expired.</h2>", status=404
-        )
-    except Exception as e:
-        print("❌ Referral redirect error:", e)
-        print(traceback.format_exc())
-        return HttpResponse("<h2>Server error.</h2>", status=500)
-
-
-# ============================================================
-# 🧾 REFERRAL CHECKOUT (WEB) — saves Order + OrderItem
-# ============================================================
-def _get_or_create_guest_user() -> User:
-    """
-    Ensure we always have a user to attach Orders to.
-    Order.user is not nullable, so we use a shared 'guest_web' user.
-    """
-    guest, created = User.objects.get_or_create(
-        username="guest_web",
-        defaults={"first_name": "Guest", "last_name": "Checkout"},
-    )
-    return guest
-
-
-@csrf_exempt  # form posts from the public page (no CSRF token)
-def referral_checkout(request, ref_code):
-    """
-    Web checkout for buyers who visit referral link.
-    Shows form (GET) and creates a pending Order (POST).
-    """
-    try:
-        listing = (
-            PartnerListing.objects.select_related("product", "partner")
-            .get(referral_code=ref_code)
-        )
-        product = listing.product
-
-        if request.method == "POST":
-            name = (request.POST.get("name") or "").strip()
-            phone = (request.POST.get("phone") or "").strip()
-            address = (request.POST.get("address") or "").strip()
-
-            if not name or not phone or not address:
-                # Re-render with error message
-                return render(
-                    request,
-                    "referral_checkout.html",
-                    {
-                        "product": product,
-                        "listing": listing,
-                        "partner_name": listing.partner.username,
-                        "error": "Please fill all fields to continue.",
-                    },
-                )
-
-            # 🧑‍🤝‍🧑 Attach to a 'guest' user so Order.user is not null
-            guest_user = _get_or_create_guest_user()
-
-            # Create a pending order (COD / manual follow-up)
-            order = Order.objects.create(
-                user=guest_user,
-                partner=listing.partner,  # uses partner FK on Order
-                subtotal_amount=listing.final_price,
-                total_amount=listing.final_price,
-                payment_method="wallet",  # semantic placeholder
-                status="pending",
-                note=(
-                    f"Web guest order — Name: {name}, "
-                    f"Phone: {phone}, Address: {address}"
-                ),
-            )
-
-            OrderItem.objects.create(
-                order=order,
-                product=product,
-                price=listing.final_price,
-                quantity=1,
-                product_name_snapshot=product.name,
-                product_image_snapshot=getattr(product.image, "url", ""),
-                partner=listing.partner,
-            )
-            # OrderItem.save() will set review_product_id
-
-            # 🎉 Show confirmation page
-            return render(
-                request,
-                "order_confirmed.html",
-                {"product": product, "customer_name": name},
-            )
-
-        # GET → initial form
-        return render(
-            request,
-            "referral_checkout.html",
-            {
-                "product": product,
-                "listing": listing,
-                "partner_name": listing.partner.username,
-            },
-        )
-    except PartnerListing.DoesNotExist:
-        return HttpResponse(
-            "<h2>Referral not found or expired.</h2>", status=404
-        )
-    except Exception as e:
-        print("❌ referral_checkout error:", e)
-        print(traceback.format_exc())
-        return HttpResponse("<h2>Server error.</h2>", status=500)
-
-
-# ============================================================
-# 📋 MY PARTNER LISTINGS (simple JSON version)
-# ============================================================
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def my_listings(request):
-    """
-    Simple JSON listing for a partner's own resale products.
-    """
-    user = request.user
-    listings = PartnerListing.objects.filter(partner=user).select_related(
-        "product"
-    )
-
-    data = []
-    for l in listings:
-        product = l.product
-        data.append(
-            {
-                "id": l.id,
-                "name": product.name if product else "",
-                "product": {
-                    "name": product.name if product else "",
-                    "price": float(product.price) if product else 0.0,
-                    "image": str(getattr(product, "image", "")),
-                },
-                "markup": float(l.markup),
-                "total_profit": float(l.total_profit or 0),
-                "slug": l.slug,
-                "referral_url": l.referral_url,
-            }
-        )
-
-    return Response(data, status=200)
-
-
-# ============================================================
-# 🧾 ADMIN: LIST ALL ORDERS
-# ============================================================
-@api_view(["GET"])
-@permission_classes([IsAdminUser])
-def list_all_orders(request):
-    """
-    Admin-only: list all orders (used for dashboard stats).
-    """
-    orders = Order.objects.all().order_by("-created_at")
-
-    data = []
-    for o in orders:
-        data.append(
-            {
-                "id": o.id,
-                "user": o.user.username,
-                "total_amount": float(o.total_amount),
-                "status": o.status,
-                "payment_method": o.payment_method,
-                "created_at": o.created_at,
-            }
-        )
-
-    return Response(data, status=status.HTTP_200_OK)
-
-
-# ============================================================
 # 🎥 PURCHASED ITEMS → for UploadReviewScreen
+# ⭐ BEST VERSION — Snapshot-first image resolution
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def purchased_items(request):
     """
     Return all items the user has purchased.
-    This is what UploadReviewScreen uses to let user pick a product to review.
+    UploadReviewScreen uses this.
     """
     user = request.user
 
@@ -705,35 +358,41 @@ def purchased_items(request):
     results = []
 
     for item in items:
-        # Try multiple ways to get a usable ID for reviews
+
         pid = item.review_product_id or (
             item.product.id if item.product else None
         )
 
-        # 🛠 Fallback for old seed/orders where product FK is null
-        if pid is None and item.product_name_snapshot:
+        safe_name = item.product_name_snapshot or (
+            item.product.name if item.product else "Unknown Product"
+        )
+
+        # ⭐ BEST IMAGE LOGIC — snapshot first
+        image_url = None
+
+        # 1️⃣ Snapshot (best)
+        if item.product_image_snapshot:
+            image_url = item.product_image_snapshot
+
+        # 2️⃣ Product live image
+        elif item.product and hasattr(item.product.image, "url"):
             try:
-                prod = Product.objects.filter(
-                    name=item.product_name_snapshot
-                ).first()
-                if prod:
-                    pid = prod.id
-                    # optional: persist to DB to avoid looking again
-                    if not item.review_product_id:
-                        item.review_product_id = pid
-                        item.product = item.product or prod
-                        item.save(update_fields=["review_product_id", "product"])
-            except Exception as e:
-                print("⚠️ Fallback product lookup failed:", e)
+                image_url = item.product.image.url
+            except:
+                image_url = None
+
+        # 3️⃣ Placeholder
+        if not image_url:
+            image_url = "https://via.placeholder.com/200x200.png?text=No+Image"
 
         results.append(
             {
                 "id": item.id,
                 "order_id": item.order_id,
                 "product_id": item.product.id if item.product else None,
-                "review_product_id": pid,  # ⭐ MAIN ID for reviews
-                "product_name": item.product_name_snapshot,
-                "image": item.product_image_snapshot,
+                "review_product_id": pid,
+                "product_name": safe_name,
+                "image": image_url,
                 "quantity": item.quantity,
                 "price": str(item.price),
             }
