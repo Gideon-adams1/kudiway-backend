@@ -22,7 +22,7 @@ from .models import (
 )
 from .serializers import VideoReviewSerializer, VideoCommentSerializer
 
-from orders.models import OrderItem  # 🔧 only import what we know exists
+from orders.models import OrderItem  # ← we use OrderItem ONLY, not Product
 
 User = get_user_model()
 
@@ -36,7 +36,7 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 
 # ============================================================
-# 🎥 UPLOAD REVIEW (FINAL VERSION – FIXED)
+# 🎥 UPLOAD REVIEW (FINAL + CORRECT FOR YOUR MODELS)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -47,10 +47,9 @@ def upload_review(request):
 
         print("📥 Incoming review upload:", data)
 
-        # --------------------------------------------------
-        # 1) Get product identifier from request
-        #    Support both "product_id" and "review_product_id"
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # 1) Support both product_id and review_product_id
+        # -----------------------------------------------------
         raw_pid = data.get("product_id") or data.get("review_product_id")
 
         if not raw_pid:
@@ -59,29 +58,25 @@ def upload_review(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        product_obj = None   # placeholder if you later support real Product FK
+        product_obj = None
         product_name = None
         product_image = None
 
-        # --------------------------------------------------
-        # 2) If it's an "OI-xx" style id → use OrderItem
-        #    (this matches your purchased-items API)
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # 2) ORDER ITEM LOGIC → handles OI-XX and product-less items
+        # -----------------------------------------------------
         try:
             item = OrderItem.objects.get(review_product_id=str(raw_pid))
-            # Use the actual fields from your JSON response:
-            # {
-            #   "product_name": "...",
-            #   "image": "..."
-            # }
-            product_name = getattr(item, "product_name", None)
-            product_image = getattr(item, "image", None)
-            print("🧾 Matched OrderItem for review:", item.id, product_name, product_image)
+
+            # Correct actual DB fields:
+            product_name = item.product_name_snapshot
+            product_image = item.product_image_snapshot
+
+            print("🧾 Matched OrderItem:", item.id, product_name, product_image)
+
         except OrderItem.DoesNotExist:
-            # If you later support real product IDs, you can add logic here.
-            # For now, fail clearly if no matching OrderItem.
             return Response(
-                {"error": "Invalid product identifier for review."},
+                {"error": "Invalid product identifier — no matching OrderItem."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -94,22 +89,19 @@ def upload_review(request):
         if not product_image:
             product_image = ""
 
-        # --------------------------------------------------
+        # -----------------------------------------------------
         # 3) Validate video file
-        # --------------------------------------------------
+        # -----------------------------------------------------
         video_file = request.FILES.get("video")
         if not video_file:
-            return Response(
-                {"error": "Video file missing."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"error": "Video file missing."}, status=status.HTTP_400_BAD_REQUEST)
 
         thumbnail_image = request.FILES.get("thumbnail_image")
         thumbnail_time = data.get("thumbnail_time_ms")
 
-        # --------------------------------------------------
+        # -----------------------------------------------------
         # 4) Upload video → Cloudinary
-        # --------------------------------------------------
+        # -----------------------------------------------------
         uploaded_video = cloudinary.uploader.upload_large(
             video_file,
             resource_type="video",
@@ -118,11 +110,12 @@ def upload_review(request):
 
         video_url = uploaded_video["secure_url"]
         public_id = uploaded_video["public_id"]
-        print("✅ Video uploaded:", video_url, public_id)
 
-        # --------------------------------------------------
-        # 5) Thumbnail handling
-        # --------------------------------------------------
+        print("✅ Video uploaded:", video_url)
+
+        # -----------------------------------------------------
+        # 5) Thumbnail handling (upload manually or auto-generate)
+        # -----------------------------------------------------
         if thumbnail_image:
             thumb = cloudinary.uploader.upload(
                 thumbnail_image,
@@ -130,9 +123,7 @@ def upload_review(request):
                 resource_type="image",
             )
             thumbnail_url = thumb["secure_url"]
-            print("✅ Custom thumbnail uploaded:", thumbnail_url)
         else:
-            # Cloudinary auto thumbnail from time (if provided)
             if thumbnail_time:
                 thumbnail_url = (
                     f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}"
@@ -140,42 +131,40 @@ def upload_review(request):
                 )
             else:
                 thumbnail_url = ""
-            print("🖼 Auto thumbnail url:", thumbnail_url)
 
-        # --------------------------------------------------
-        # 6) Duration: be defensive in case of ""
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # 6) Duration handling
+        # -----------------------------------------------------
         raw_duration = data.get("duration_seconds", 0)
         try:
-            duration_seconds = int(raw_duration) if raw_duration not in [None, ""] else 0
-        except ValueError:
+            duration_seconds = int(raw_duration)
+        except Exception:
             duration_seconds = 0
 
-        # --------------------------------------------------
-        # 7) Save Review
-        #    ⚠️ Removed product_id kwarg – avoid unexpected field error
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # 7) Save review
+        # -----------------------------------------------------
         review = VideoReview.objects.create(
             user=user,
             video_url=video_url,
             thumbnail_url=thumbnail_url,
             cloudinary_public_id=public_id,
+
             caption=data.get("caption", ""),
             location=data.get("location", ""),
             duration_seconds=duration_seconds,
 
-            # product metadata
+            # PRODUCT METADATA
             review_product_id=str(raw_pid),
-            product=product_obj,  # keep None for now, or set later if you add real Product FK
+            product=None,  # always None for OI-xx, you can link later if needed
             product_name=product_name,
             product_image_url=product_image,
 
-            # thumbnail
             thumbnail_time_ms=thumbnail_time,
             is_public=True,
         )
 
-        print("✅ Review saved with ID:", review.id)
+        print("🎉 REVIEW SAVED:", review.id)
 
         return Response(
             {"message": "Review uploaded successfully!", "id": review.id},
