@@ -1,17 +1,15 @@
-from django.db import transaction
+import traceback
+from django.conf import settings
 from django.db.models import F
 from django.contrib.auth import get_user_model
 
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 
-import cloudinary
 import cloudinary.uploader
-from cloudinary.utils import cloudinary_url
 
 from .models import (
     VideoReview,
@@ -24,7 +22,7 @@ from .models import (
 )
 from .serializers import VideoReviewSerializer, VideoCommentSerializer
 
-from orders.models import Product  # ⭐ needed for linking purchased product
+from orders.models import OrderItem  # 🔧 only import what we know exists
 
 User = get_user_model()
 
@@ -38,168 +36,172 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 
 # ============================================================
-# UPLOAD REVIEW (UPDATED)
+# 🎥 UPLOAD REVIEW (FINAL VERSION – FIXED)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-@parser_classes([MultiPartParser, FormParser])
-@transaction.atomic
-def upload_video_review(request):
-    """
-    Upload video + thumbnail + product information.
-    Handles review_product_id for linking to actual purchased item.
-    """
-
-    user = request.user
-
-    # -----------------------------
-    # Validate video
-    # -----------------------------
-    file_obj = request.FILES.get("video")
-    if not file_obj:
-        return Response(
-            {"detail": "No video file provided (form-data field: video)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    caption = request.data.get("caption", "").strip()
-    location = request.data.get("location", "").strip()
-    country_code = request.data.get("country_code", "").strip()
-
-    # Product metadata
-    review_product_id = request.data.get("review_product_id")  # NEW
-    product_id_raw = request.data.get("product_id")
-    product_name = request.data.get("product_name", "").strip()
-    product_image_url = request.data.get("product_image_url", "").strip()
-
-    # Thumbnail options
-    thumbnail_time_ms = request.data.get("thumbnail_time_ms")
-    custom_thumbnail = request.FILES.get("thumbnail_image")
-
-    # -----------------------------
-    # Hashtags
-    # -----------------------------
-    hashtags_raw = request.data.get("hashtags", "")
-    hashtag_objs = []
-    if hashtags_raw:
-        parts = [h.strip().lstrip("#") for h in hashtags_raw.split(",")]
-        for name in parts:
-            if name:
-                tag, _ = Hashtag.objects.get_or_create(name=name)
-                hashtag_objs.append(tag)
-
-    # -----------------------------
-    # Upload to Cloudinary
-    # -----------------------------
+def upload_review(request):
     try:
-        upload_result = cloudinary.uploader.upload_large(
-            file_obj,
+        user = request.user
+        data = request.data
+
+        print("📥 Incoming review upload:", data)
+
+        # --------------------------------------------------
+        # 1) Get product identifier from request
+        #    Support both "product_id" and "review_product_id"
+        # --------------------------------------------------
+        raw_pid = data.get("product_id") or data.get("review_product_id")
+
+        if not raw_pid:
+            return Response(
+                {"error": "Missing product identifier (product_id or review_product_id)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        product_obj = None   # placeholder if you later support real Product FK
+        product_name = None
+        product_image = None
+
+        # --------------------------------------------------
+        # 2) If it's an "OI-xx" style id → use OrderItem
+        #    (this matches your purchased-items API)
+        # --------------------------------------------------
+        try:
+            item = OrderItem.objects.get(review_product_id=str(raw_pid))
+            # Use the actual fields from your JSON response:
+            # {
+            #   "product_name": "...",
+            #   "image": "..."
+            # }
+            product_name = getattr(item, "product_name", None)
+            product_image = getattr(item, "image", None)
+            print("🧾 Matched OrderItem for review:", item.id, product_name, product_image)
+        except OrderItem.DoesNotExist:
+            # If you later support real product IDs, you can add logic here.
+            # For now, fail clearly if no matching OrderItem.
+            return Response(
+                {"error": "Invalid product identifier for review."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not product_name:
+            return Response(
+                {"error": "Product name missing from order item."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not product_image:
+            product_image = ""
+
+        # --------------------------------------------------
+        # 3) Validate video file
+        # --------------------------------------------------
+        video_file = request.FILES.get("video")
+        if not video_file:
+            return Response(
+                {"error": "Video file missing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        thumbnail_image = request.FILES.get("thumbnail_image")
+        thumbnail_time = data.get("thumbnail_time_ms")
+
+        # --------------------------------------------------
+        # 4) Upload video → Cloudinary
+        # --------------------------------------------------
+        uploaded_video = cloudinary.uploader.upload_large(
+            video_file,
             resource_type="video",
-            folder="kudiway/reviews",
-            eager=[{"format": "mp4"}],
+            folder="reviews/videos/",
         )
-    except Exception as e:
+
+        video_url = uploaded_video["secure_url"]
+        public_id = uploaded_video["public_id"]
+        print("✅ Video uploaded:", video_url, public_id)
+
+        # --------------------------------------------------
+        # 5) Thumbnail handling
+        # --------------------------------------------------
+        if thumbnail_image:
+            thumb = cloudinary.uploader.upload(
+                thumbnail_image,
+                folder="reviews/thumbnails/",
+                resource_type="image",
+            )
+            thumbnail_url = thumb["secure_url"]
+            print("✅ Custom thumbnail uploaded:", thumbnail_url)
+        else:
+            # Cloudinary auto thumbnail from time (if provided)
+            if thumbnail_time:
+                thumbnail_url = (
+                    f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}"
+                    f"/video/upload/so_{thumbnail_time}/{public_id}.jpg"
+                )
+            else:
+                thumbnail_url = ""
+            print("🖼 Auto thumbnail url:", thumbnail_url)
+
+        # --------------------------------------------------
+        # 6) Duration: be defensive in case of ""
+        # --------------------------------------------------
+        raw_duration = data.get("duration_seconds", 0)
+        try:
+            duration_seconds = int(raw_duration) if raw_duration not in [None, ""] else 0
+        except ValueError:
+            duration_seconds = 0
+
+        # --------------------------------------------------
+        # 7) Save Review
+        #    ⚠️ Removed product_id kwarg – avoid unexpected field error
+        # --------------------------------------------------
+        review = VideoReview.objects.create(
+            user=user,
+            video_url=video_url,
+            thumbnail_url=thumbnail_url,
+            cloudinary_public_id=public_id,
+            caption=data.get("caption", ""),
+            location=data.get("location", ""),
+            duration_seconds=duration_seconds,
+
+            # product metadata
+            review_product_id=str(raw_pid),
+            product=product_obj,  # keep None for now, or set later if you add real Product FK
+            product_name=product_name,
+            product_image_url=product_image,
+
+            # thumbnail
+            thumbnail_time_ms=thumbnail_time,
+            is_public=True,
+        )
+
+        print("✅ Review saved with ID:", review.id)
+
         return Response(
-            {"detail": f"Cloudinary upload failed: {str(e)}"},
+            {"message": "Review uploaded successfully!", "id": review.id},
+            status=status.HTTP_201_CREATED,
+        )
+
+    except Exception as e:
+        print("❌ UPLOAD REVIEW ERROR:", e)
+        print(traceback.format_exc())
+        return Response(
+            {
+                "error": "Server failed to upload review.",
+                "details": str(e),
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    public_id = upload_result.get("public_id")
-    video_url = upload_result.get("secure_url")
-    duration = int(upload_result.get("duration", 0))
-
-    # -----------------------------
-    # Generate default thumbnail
-    # -----------------------------
-    thumbnail_url, _ = cloudinary_url(
-        public_id,
-        resource_type="video",
-        format="jpg",
-        transformation={
-            "width": 720,
-            "height": 1280,
-            "crop": "fill",
-            "gravity": "auto",
-        },
-        secure=True,
-    )
-
-    # -----------------------------
-    # Override with custom thumbnail
-    # -----------------------------
-    if custom_thumbnail:
-        try:
-            thumb_up = cloudinary.uploader.upload(
-                custom_thumbnail,
-                folder="kudiway/reviews/thumbnails",
-                resource_type="image",
-            )
-            thumbnail_url = thumb_up.get("secure_url")
-        except Exception as e:
-            return Response(
-                {"detail": f"Thumbnail upload failed: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-    # -----------------------------
-    # Try linking to Product model
-    # -----------------------------
-    product_obj = None
-
-    if review_product_id:
-        try:
-            product_obj = Product.objects.get(id=review_product_id)
-        except Product.DoesNotExist:
-            product_obj = None
-
-    # fallback: try product_id_raw
-    elif product_id_raw:
-        try:
-            product_obj = Product.objects.get(id=product_id_raw)
-        except Product.DoesNotExist:
-            product_obj = None
-
-    # -----------------------------
-    # Create review record
-    # -----------------------------
-    video = VideoReview.objects.create(
-        user=user,
-        video_url=video_url,
-        thumbnail_url=thumbnail_url,
-        cloudinary_public_id=public_id,
-        caption=caption,
-        location=location,
-        duration_seconds=duration,
-        country_code=country_code,
-
-        # Product linking
-        review_product_id=review_product_id,
-        product=product_obj,
-        product_id=int(product_id_raw) if str(product_id_raw).isdigit() else None,
-        product_name=product_name,
-        product_image_url=product_image_url,
-
-        # Thumbnail metadata
-        thumbnail_time_ms=thumbnail_time_ms,
-    )
-
-    if hashtag_objs:
-        video.hashtags.set([h.id for h in hashtag_objs])
-
-    serializer = VideoReviewSerializer(video, context={"request": request})
-    return Response(serializer.data, status=201)
-
 
 # ============================================================
-# FEEDS (unchanged)
+# FEEDS
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def feed_for_you(request):
     videos = VideoReview.objects.filter(
-        is_public=True,
-        is_deleted=False,
-        is_approved=True,
+        is_public=True, is_deleted=False, is_approved=True
     ).order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
@@ -218,9 +220,7 @@ def feed_following(request):
     ).values_list("following_id", flat=True)
 
     videos = VideoReview.objects.filter(
-        user_id__in=following_ids,
-        is_public=True,
-        is_deleted=False,
+        user_id__in=following_ids, is_public=True, is_deleted=False
     ).order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
@@ -233,8 +233,7 @@ def feed_following(request):
 @permission_classes([IsAuthenticated])
 def feed_trending(request):
     videos = VideoReview.objects.filter(
-        is_public=True,
-        is_deleted=False,
+        is_public=True, is_deleted=False
     ).order_by(
         -(F("likes_count") * 2 + F("comments_count") * 3 + F("views_count"))
     )
@@ -256,7 +255,7 @@ def toggle_like(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=404)
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     like, created = VideoLike.objects.get_or_create(user=user, video=video)
 
@@ -281,12 +280,12 @@ def post_comment(request, video_id):
     text = request.data.get("text", "").strip()
 
     if not text:
-        return Response({"detail": "Comment cannot be empty."}, status=400)
+        return Response({"detail": "Comment cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=404)
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     comment = VideoComment.objects.create(video=video, user=user, text=text)
 
@@ -296,7 +295,7 @@ def post_comment(request, video_id):
     video.save(update_fields=["comments_count"])
 
     serializer = VideoCommentSerializer(comment)
-    return Response(serializer.data, status=201)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET"])
@@ -305,13 +304,13 @@ def get_comments(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=404)
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        comments = VideoComment.objects.filter(
-            video=video, is_deleted=False
-        ).order_by("-created_at")
-        serializer = VideoCommentSerializer(comments, many=True)
-        return Response(serializer.data)
+    comments = VideoComment.objects.filter(
+        video=video, is_deleted=False
+    ).order_by("-created_at")
+    serializer = VideoCommentSerializer(comments, many=True)
+    return Response(serializer.data)
 
 
 @api_view(["DELETE"])
@@ -322,12 +321,12 @@ def delete_comment(request, comment_id):
     try:
         comment = VideoComment.objects.get(id=comment_id, is_deleted=False)
     except VideoComment.DoesNotExist:
-        return Response({"detail": "Comment not found."}, status=404)
+        return Response({"detail": "Comment not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if comment.user != user:
         return Response(
             {"detail": "You can only delete your own comments."},
-            status=403,
+            status=status.HTTP_403_FORBIDDEN,
         )
 
     comment.is_deleted = True
@@ -339,7 +338,7 @@ def delete_comment(request, comment_id):
     ).count()
     video.save(update_fields=["comments_count"])
 
-    return Response({"detail": "Comment deleted."}, status=200)
+    return Response({"detail": "Comment deleted."}, status=status.HTTP_200_OK)
 
 
 # ============================================================
@@ -353,7 +352,7 @@ def toggle_save(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=404)
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     save_obj, created = VideoSave.objects.get_or_create(user=user, video=video)
 
@@ -379,7 +378,7 @@ def track_view(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=404)
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     VideoView.objects.create(video=video, user=user)
 
@@ -398,12 +397,12 @@ def toggle_follow(request, user_id):
     follower = request.user
 
     if follower.id == user_id:
-        return Response({"detail": "You cannot follow yourself."}, status=400)
+        return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response({"detail": "User not found."}, status=404)
+        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
     follow, created = UserFollow.objects.get_or_create(
         follower=follower,
@@ -426,7 +425,7 @@ def creator_videos(request, user_id):
     try:
         creator = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response({"detail": "User not found."}, status=404)
+        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
     videos = VideoReview.objects.filter(
         user=creator,

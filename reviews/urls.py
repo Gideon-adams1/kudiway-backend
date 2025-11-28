@@ -8,7 +8,7 @@ urlpatterns = [
     path("feed/trending/", views.feed_trending, name="feed_trending"),
 
     # Upload
-    path("upload/", views.upload_video_review, name="upload_video_review"),
+    path("upload/", views.upload_review, name="upload_review"),
 
     # Creator videos
     path("creator/<int:user_id>/videos/", views.creator_videos, name="creator_videos"),
