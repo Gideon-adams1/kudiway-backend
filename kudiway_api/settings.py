@@ -27,7 +27,7 @@ ALLOWED_HOSTS = [
     "kudiway-backend.onrender.com.",
     "localhost",
     "127.0.0.1",
-    "*", 
+    "*",
     "testserver",
 ]
 
@@ -42,7 +42,13 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+
+    # Local apps
     "reviews",
+    "users",
+    "kudiwallet",
+    "orders",
+    "dashboard",
 
     # Third-party
     "rest_framework",
@@ -51,12 +57,6 @@ INSTALLED_APPS = [
     "django_q",
     "cloudinary",
     "cloudinary_storage",
-
-    # Local apps
-    "users",
-    "kudiwallet",
-    "orders",
-    "dashboard",
 ]
 
 # -------------------------------------------------
@@ -77,12 +77,12 @@ MIDDLEWARE = [
 ROOT_URLCONF = "kudiway_api.urls"
 
 # -------------------------------------------------
-# Templates (updated for referral landing page)
+# Templates
 # -------------------------------------------------
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],  # ✅ ensure templates folder recognized
+        "DIRS": [BASE_DIR / "templates"],  # Template folder enabled
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -145,13 +145,19 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
-# ✅ Cloudinary (media uploads)
+# -------------------------------------------------
+# Cloudinary (Media Upload Hosting)
+# -------------------------------------------------
 CLOUDINARY_STORAGE = {
     "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
     "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
     "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
 }
+
 DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+
+# ✅ FIX: Expose Cloudinary cloud name for thumbnail generation
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "dmpymbirt")
 
 # -------------------------------------------------
 # REST Framework + JWT
@@ -159,7 +165,7 @@ DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-         "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.AllowAny",
@@ -203,7 +209,6 @@ LOGGING = {
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# ✅ Helps Render + HTTPS redirection
 CSRF_TRUSTED_ORIGINS = [
     "https://kudiway.com",
     "https://www.kudiway.com",
@@ -211,13 +216,10 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 LOGIN_URL = "/api-auth/login/"
 LOGOUT_URL = "/api-auth/logout/"
-# Email (adjust to your provider or use console backend for dev)
+
+# Email backend
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 DEFAULT_FROM_EMAIL = "Kudiway <no-reply@kudiway.com>"
-
-# Optional Twilio (only if you want real SMS)
-# TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# TWILIO_AUTH_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# TWILIO_FROM = "+1234567890"  # your Twilio number
