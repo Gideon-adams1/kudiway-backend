@@ -22,7 +22,7 @@ from rest_framework.response import Response
 from kudiwallet.models import Wallet, Transaction
 from users.models import KudiPoints
 from .models import Order, OrderItem, Product, PartnerListing
-from .serializers import OrderSerializer, ProductSerializer, PartnerListingSerializer
+from .serializers import ProductSerializer, PartnerListingSerializer
 
 
 # ============================================================
@@ -48,12 +48,10 @@ def log_transaction(user, transaction_type, amount, description=""):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def list_products(request):
-    """List only Kudiway original products."""
+    """List store products."""
     try:
         products = Product.objects.all().order_by("-created_at")
-        serializer = ProductSerializer(
-            products, many=True, context={"request": request}
-        )
+        serializer = ProductSerializer(products, many=True, context={"request": request})
         print(f"✅ Loaded {len(products)} products.")
         return Response(serializer.data, status=200)
     except Exception as e:
@@ -78,9 +76,7 @@ def get_product(request, pk):
         # Fallback to partner listing
         try:
             listing = PartnerListing.objects.get(pk=pk)
-            serializer = PartnerListingSerializer(
-                listing, context={"request": request}
-            )
+            serializer = PartnerListingSerializer(listing, context={"request": request})
             return Response(serializer.data, status=200)
         except PartnerListing.DoesNotExist:
             return Response({"error": "Product not found."}, status=404)
@@ -91,7 +87,7 @@ def get_product(request, pk):
 
 
 # ============================================================
-# 🧾 CREATE ORDER (App checkout)
+# 🧾 CREATE ORDER (Wallet + BNPL)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -129,14 +125,14 @@ def create_order(request):
     if not items:
         return Response({"error": "No items provided."}, status=400)
 
+    # Compute total
     try:
         total_amount = sum(
-            Decimal(str(i.get("price", 0))) * int(i.get("qty", 1)) for i in items
+            Decimal(str(i.get("price", 0))) * int(i.get("qty", 1))
+            for i in items
         )
     except Exception:
-        return Response(
-            {"error": "Invalid item price or quantity."}, status=400
-        )
+        return Response({"error": "Invalid item price or quantity."}, status=400)
 
     # Points conversion: 10 pts = ₵1
     usable_points_cedis = min(points_wallet.balance / Decimal("10"), total_amount)
@@ -269,7 +265,6 @@ def create_order(request):
             product_image_snapshot=image,
         )
         # OrderItem.save() will automatically set review_product_id
-        # if product is not None (see model logic).
 
         # Link partner if from referral
         if partner_id:
@@ -277,28 +272,102 @@ def create_order(request):
                 partner_user = User.objects.get(id=partner_id)
                 order_item.partner = partner_user
                 order_item.save(update_fields=["partner"])
-                print(
-                    f"🔗 Linked partner {partner_user.username} to item {name}"
-                )
+                print(f"🔗 Linked partner {partner_user.username} to item {name}")
             except Exception as e:
                 print("⚠️ Failed to link partner:", e)
 
-    serializer = OrderSerializer(order, context={"request": request})
-    return Response(serializer.data, status=201)
+    return Response({"message": "Order created"}, status=201)
 
 
 # ============================================================
-# 📜 USER ORDERS
+# 📜 USER ORDERS — SAFE VERSION
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_orders(request):
-    """List all orders of logged-in user."""
-    orders = Order.objects.filter(user=request.user).order_by("-created_at")
-    serializer = OrderSerializer(
-        orders, many=True, context={"request": request}
-    )
-    return Response(serializer.data, status=200)
+    """
+    Return orders + items for the logged-in user.
+
+    This is what MyOrdersScreen uses → /api/orders/user-orders/
+    """
+    user = request.user
+
+    try:
+        orders = (
+            Order.objects.filter(user=user)
+            .prefetch_related("items", "items__product")
+            .order_by("-created_at")
+        )
+
+        result = []
+
+        for order in orders:
+            items_list = []
+
+            for item in order.items.all():
+                # MAIN ID FOR REVIEWS
+                safe_pid = (
+                    item.review_product_id
+                    or (item.product.id if item.product else None)
+                )
+
+                # NAME
+                safe_name = (
+                    item.product_name_snapshot
+                    or (item.product.name if item.product else "Unknown Product")
+                )
+
+                # IMAGE: handle Cloudinary object OR string OR missing
+                raw_img = item.product_image_snapshot or None
+                if not raw_img and item.product:
+                    try:
+                        img = item.product.image
+                        # CloudinaryField may return object with .url or a plain string
+                        if hasattr(img, "url"):
+                            raw_img = img.url
+                        else:
+                            raw_img = str(img)
+                    except Exception as e:
+                        print("⚠️ image resolve error in list_orders:", e)
+                        raw_img = None
+
+                safe_image = (
+                    raw_img
+                    or "https://via.placeholder.com/200x200.png?text=No+Image"
+                )
+
+                items_list.append(
+                    {
+                        "id": item.id,
+                        "product_id": safe_pid,
+                        "review_product_id": safe_pid,
+                        "product_name": safe_name,
+                        "image": safe_image,
+                        "quantity": item.quantity,
+                        "price": str(item.price),
+                    }
+                )
+
+            result.append(
+                {
+                    "id": order.id,
+                    "status": order.status,
+                    "payment_method": order.payment_method,
+                    "total_amount": str(order.total_amount),
+                    "created_at": order.created_at,
+                    "items": items_list,
+                }
+            )
+
+        return Response(result, status=200)
+
+    except Exception as e:
+        print("❌ list_orders error:", e)
+        print(traceback.format_exc())
+        return Response(
+            {"error": "Failed to load your orders."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 # ============================================================
@@ -321,27 +390,19 @@ def create_partner_listing(request):
         markup_raw = request.data.get("markup", "0.00")
 
         if not product_id:
-            return Response(
-                {"error": "product_id is required."}, status=400
-            )
+            return Response({"error": "product_id is required."}, status=400)
 
         try:
             markup = Decimal(str(markup_raw))
             if markup < 0:
-                return Response(
-                    {"error": "Markup cannot be negative."}, status=400
-                )
+                return Response({"error": "Markup cannot be negative."}, status=400)
         except (InvalidOperation, TypeError):
-            return Response(
-                {"error": "Invalid markup value."}, status=400
-            )
+            return Response({"error": "Invalid markup value."}, status=400)
 
         try:
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
-            return Response(
-                {"error": "Product not found."}, status=404
-            )
+            return Response({"error": "Product not found."}, status=404)
 
         listing, created = PartnerListing.objects.get_or_create(
             partner=user,
@@ -359,14 +420,10 @@ def create_partner_listing(request):
         if not listing.referral_code:
             listing.referral_code = uuid.uuid4().hex[:8]
 
-        listing.referral_url = (
-            f"https://kudiway.com/r/{listing.referral_code}"
-        )
+        listing.referral_url = f"https://kudiway.com/r/{listing.referral_code}"
         listing.save()
 
-        serializer = PartnerListingSerializer(
-            listing, context={"request": request}
-        )
+        serializer = PartnerListingSerializer(listing, context={"request": request})
         return Response(
             {
                 "message": "Listing created successfully!",
@@ -379,9 +436,7 @@ def create_partner_listing(request):
     except Exception as e:
         print("❌ create_partner_listing error:", e)
         print(traceback.format_exc())
-        return Response(
-            {"error": "Failed to create partner listing."}, status=500
-        )
+        return Response({"error": "Failed to create partner listing."}, status=500)
 
 
 # ============================================================
@@ -405,9 +460,7 @@ def get_partner_listings(request):
         .order_by("-created_at")
     )
 
-    serializer = PartnerListingSerializer(
-        listings, many=True, context={"request": request}
-    )
+    serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
     return Response(serializer.data, status=200)
 
 
@@ -425,20 +478,14 @@ def get_referral_product(request, ref_code):
         )
         listing.clicks += 1
         listing.save(update_fields=["clicks"])
-        serializer = PartnerListingSerializer(
-            listing, context={"request": request}
-        )
+        serializer = PartnerListingSerializer(listing, context={"request": request})
         return Response(serializer.data, status=200)
     except PartnerListing.DoesNotExist:
-        return Response(
-            {"error": "Invalid or expired referral code."}, status=404
-        )
+        return Response({"error": "Invalid or expired referral code."}, status=404)
     except Exception as e:
         print("❌ Referral product error:", e)
         print(traceback.format_exc())
-        return Response(
-            {"error": "Failed to load referral product."}, status=500
-        )
+        return Response({"error": "Failed to load referral product."}, status=500)
 
 
 # ============================================================
