@@ -68,12 +68,10 @@ def list_products(request):
 def get_product(request, pk):
     """Retrieve a single product or partner listing."""
     try:
-        # Try normal product first
         product = Product.objects.get(pk=pk)
         serializer = ProductSerializer(product, context={"request": request})
         return Response(serializer.data, status=200)
     except Product.DoesNotExist:
-        # Fallback to partner listing
         try:
             listing = PartnerListing.objects.get(pk=pk)
             serializer = PartnerListingSerializer(listing, context={"request": request})
@@ -92,9 +90,6 @@ def get_product(request, pk):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_order(request):
-    """
-    Handles wallet & credit orders and partner commission tracking.
-    """
     user = request.user
     print(f"🧾 Creating order for {user.username}")
 
@@ -108,7 +103,6 @@ def create_order(request):
     if not items:
         return Response({"error": "No items provided."}, status=400)
 
-    # Compute total
     try:
         total_amount = sum(
             Decimal(str(i.get("price", 0))) * int(i.get("qty", 1))
@@ -117,44 +111,29 @@ def create_order(request):
     except Exception:
         return Response({"error": "Invalid item price or quantity."}, status=400)
 
-    # Points conversion: 10 pts = ₵1
     usable_points_cedis = min(points_wallet.balance / Decimal("10"), total_amount)
     points_to_deduct = usable_points_cedis * Decimal("10")
 
-    # --------------------------------------------------------
-    # 💳 WALLET PAYMENT
-    # --------------------------------------------------------
+    # WALLET PAYMENT
     if payment_method == "wallet":
         total_after_points = total_amount - usable_points_cedis
 
         if wallet.balance < total_after_points:
-            return Response(
-                {"error": "Insufficient wallet balance."}, status=400
-            )
+            return Response({"error": "Insufficient wallet balance."}, status=400)
 
-        # Redeem points if any
+        # Deduct points
         if points_to_deduct > 0:
             try:
                 points_wallet.redeem_points(points_to_deduct)
-            except Exception as e:
-                print("⚠️ Failed to redeem points:", e)
+            except Exception:
+                pass
 
         wallet.balance -= total_after_points
         wallet.save()
 
-        log_transaction(
-            user,
-            "wallet_purchase",
-            total_after_points,
-            "Purchase via wallet",
-        )
+        log_transaction(user, "wallet_purchase", total_after_points, "Purchase via wallet")
         if usable_points_cedis > 0:
-            log_transaction(
-                user,
-                "points_used",
-                usable_points_cedis,
-                f"Used {points_to_deduct} pts",
-            )
+            log_transaction(user, "points_used", usable_points_cedis, f"Used {points_to_deduct} pts")
 
         order = Order.objects.create(
             user=user,
@@ -165,9 +144,7 @@ def create_order(request):
             note=f"₵{usable_points_cedis:.2f} from points, ₵{total_after_points:.2f} from wallet.",
         )
 
-    # --------------------------------------------------------
-    # 💳 CREDIT (BNPL)
-    # --------------------------------------------------------
+    # CREDIT (BNPL)
     elif payment_method == "credit":
         down_payment = total_amount * Decimal("0.30")
         remaining = total_amount - down_payment
@@ -175,33 +152,17 @@ def create_order(request):
         total_credit = remaining + interest
 
         if wallet.balance < down_payment:
-            return Response(
-                {"error": "Insufficient wallet balance for downpayment."},
-                status=400,
-            )
+            return Response({"error": "Insufficient wallet balance for downpayment."}, status=400)
 
         if wallet.credit_balance + total_credit > wallet.credit_limit:
-            return Response(
-                {"error": "Credit limit exceeded."},
-                status=400,
-            )
+            return Response({"error": "Credit limit exceeded."}, status=400)
 
         wallet.balance -= down_payment
         wallet.credit_balance += total_credit
         wallet.save()
 
-        log_transaction(
-            user,
-            "credit_downpayment",
-            down_payment,
-            "BNPL downpayment",
-        )
-        log_transaction(
-            user,
-            "credit_purchase",
-            total_credit,
-            "BNPL total",
-        )
+        log_transaction(user, "credit_downpayment", down_payment, "BNPL downpayment")
+        log_transaction(user, "credit_purchase", total_credit, "BNPL total")
 
         order = Order.objects.create(
             user=user,
@@ -215,9 +176,7 @@ def create_order(request):
     else:
         return Response({"error": "Invalid payment method."}, status=400)
 
-    # --------------------------------------------------------
-    # 🛍 CREATE ORDER ITEMS
-    # --------------------------------------------------------
+    # CREATE ORDER ITEMS
     for item in items:
         name = item.get("name", "Unnamed Product")
         price = Decimal(str(item.get("price", 0)))
@@ -264,9 +223,6 @@ def create_order(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_orders(request):
-    """
-    Return orders + items for MyOrdersScreen.
-    """
     user = request.user
 
     try:
@@ -337,16 +293,82 @@ def list_orders(request):
 
 
 # ============================================================
+# ⭐ MISSING FUNCTION — ADDED BACK
+# 🤝 CREATE PARTNER LISTING
+# ============================================================
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_partner_listing(request):
+    """
+    Allow verified partners to create or update a resale listing.
+    """
+    try:
+        user = request.user
+        profile = getattr(user, "profile", None)
+        if not profile or not getattr(profile, "is_verified_partner", False):
+            return Response(
+                {"error": "Only verified partners can create listings."},
+                status=403,
+            )
+
+        product_id = request.data.get("product_id")
+        markup_raw = request.data.get("markup", "0.00")
+
+        if not product_id:
+            return Response({"error": "product_id is required."}, status=400)
+
+        try:
+            markup = Decimal(str(markup_raw))
+            if markup < 0:
+                return Response({"error": "Markup cannot be negative."}, status=400)
+        except (InvalidOperation, TypeError):
+            return Response({"error": "Invalid markup value."}, status=400)
+
+        try:
+            product = Product.objects.get(id=product_id)
+        except Product.DoesNotExist:
+            return Response({"error": "Product not found."}, status=404)
+
+        listing, created = PartnerListing.objects.get_or_create(
+            partner=user,
+            product=product,
+            defaults={
+                "markup": markup,
+                "final_price": product.price + markup,
+            },
+        )
+
+        if not created:
+            listing.markup = markup
+            listing.final_price = product.price + markup
+
+        if not listing.referral_code:
+            listing.referral_code = uuid.uuid4().hex[:8]
+
+        listing.referral_url = f"https://kudiway.com/r/{listing.referral_code}"
+        listing.save()
+
+        serializer = PartnerListingSerializer(listing, context={"request": request})
+        return Response(
+            {
+                "message": "Listing created successfully!",
+                "listing": serializer.data,
+            },
+            status=201,
+        )
+
+    except Exception as e:
+        print("❌ create_partner_listing error:", e)
+        print(traceback.format_exc())
+        return Response({"error": "Failed to create partner listing."}, status=500)
+
+
+# ============================================================
 # 🎥 PURCHASED ITEMS → for UploadReviewScreen
-# ⭐ BEST VERSION — Snapshot-first image resolution
 # ============================================================
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def purchased_items(request):
-    """
-    Return all items the user has purchased.
-    UploadReviewScreen uses this.
-    """
     user = request.user
 
     items = (
@@ -367,21 +389,18 @@ def purchased_items(request):
             item.product.name if item.product else "Unknown Product"
         )
 
-        # ⭐ BEST IMAGE LOGIC — snapshot first
+        # ⭐ BEST IMAGE LOGIC
         image_url = None
 
-        # 1️⃣ Snapshot (best)
         if item.product_image_snapshot:
             image_url = item.product_image_snapshot
 
-        # 2️⃣ Product live image
         elif item.product and hasattr(item.product.image, "url"):
             try:
                 image_url = item.product.image.url
             except:
                 image_url = None
 
-        # 3️⃣ Placeholder
         if not image_url:
             image_url = "https://via.placeholder.com/200x200.png?text=No+Image"
 
