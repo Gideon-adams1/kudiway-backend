@@ -418,3 +418,79 @@ def purchased_items(request):
         )
 
     return Response(results, status=200)
+# ============================================================
+# 🔗 REFERRAL PRODUCT API
+# Used when a buyer opens the referral link → returns product details
+# ============================================================
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def get_referral_product(request, ref_code):
+    """
+    When someone opens https://kudiway.com/r/<ref_code>
+    → return the partner listing + product info.
+    """
+    try:
+        listing = PartnerListing.objects.select_related("product", "partner").get(
+            referral_code=ref_code
+        )
+        listing.clicks += 1
+        listing.save(update_fields=["clicks"])
+
+        serializer = PartnerListingSerializer(listing, context={"request": request})
+        return Response(serializer.data, status=200)
+
+    except PartnerListing.DoesNotExist:
+        return Response({"error": "Invalid referral code."}, status=404)
+
+    except Exception as e:
+        print("❌ get_referral_product error:", e)
+        print(traceback.format_exc())
+        return Response({"error": "Failed to load referral product."}, status=500)
+
+
+# ============================================================
+# 🔄 REFERRAL CHECKOUT (WEB-FRIENDLY PAGE)
+# Shows a simple page that deep-links into the app
+# ============================================================
+@csrf_exempt
+def referral_checkout(request, ref_code):
+    """
+    Render a simple HTML checkout landing page for the referral link.
+    The mobile app can detect the link and deep-link to the store checkout page.
+    """
+
+    try:
+        listing = PartnerListing.objects.select_related("product").get(
+            referral_code=ref_code
+        )
+    except PartnerListing.DoesNotExist:
+        return HttpResponse("<h2>Invalid referral link</h2>", status=404)
+
+    product = listing.product
+
+    html = f"""
+    <html>
+        <head>
+            <title>Kudiway Checkout</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        </head>
+        <body style="font-family: Arial; text-align:center; padding:20px;">
+            <h2>Buy: {product.name}</h2>
+            <img src="{product.image.url if hasattr(product.image,'url') else ''}"
+                 style="width: 200px; height: 200px; object-fit: cover; border-radius: 12px;" />
+
+            <p style="font-size: 20px; margin-top: 20px;">
+                Price: <b>₵{listing.final_price}</b>
+            </p>
+
+            <p>Sold by partner: <b>{listing.partner.username}</b></p>
+
+            <a href="kudiway://checkout/{ref_code}"
+               style="padding: 14px 20px; background:#4CAF50; color:white;
+               text-decoration:none; border-radius: 8px; font-size:18px;">
+               Open in Kudiway App
+            </a>
+        </body>
+    </html>
+    """
+    return HttpResponse(html)
