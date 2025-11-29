@@ -1,4 +1,5 @@
 import traceback
+
 from django.conf import settings
 from django.db.models import F
 from django.contrib.auth import get_user_model
@@ -22,7 +23,7 @@ from .models import (
 )
 from .serializers import VideoReviewSerializer, VideoCommentSerializer
 
-from orders.models import OrderItem  # ← we use OrderItem ONLY, not Product
+from orders.models import OrderItem  # we link reviews to OrderItem snapshots
 
 User = get_user_model()
 
@@ -36,7 +37,64 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 
 # ============================================================
-# 🎥 UPLOAD REVIEW (FINAL + CORRECT FOR YOUR MODELS)
+# Helpers
+# ============================================================
+def normalize_media_value(value):
+    """
+    Turn any 'image' / 'file' / 'Cloudinary' style object into a plain string URL.
+    Prevents 'Value is an object, expected a String' on the frontend.
+    """
+    if not value:
+        return ""
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, dict):
+        # common keys from Cloudinary / DRF serializers
+        for key in ("secure_url", "url", "path", "src", "image", "file"):
+            v = value.get(key)
+            if isinstance(v, str):
+                return v
+
+    # Fallback: string representation
+    return str(value)
+
+
+def resolve_order_item_for_review(raw_pid):
+    """
+    Resolve the correct OrderItem for this review.
+
+    raw_pid comes from frontend: product_id or review_product_id (string like "13").
+
+    We avoid MultipleObjectsReturned by:
+      1) First trying review_product_id filter and taking the latest (highest id)
+      2) If none, trying primary key lookup (id=<int>)
+    """
+    pid_str = str(raw_pid)
+
+    # First: use review_product_id matches, pick the latest
+    qs = OrderItem.objects.filter(review_product_id=pid_str).order_by("-id")
+    if qs.exists():
+        return qs.first()
+
+    # Second: maybe the frontend sent the actual OrderItem pk (numeric)
+    try:
+        pid_int = int(pid_str)
+    except (ValueError, TypeError):
+        pid_int = None
+
+    if pid_int is not None:
+        try:
+            return OrderItem.objects.get(id=pid_int)
+        except OrderItem.DoesNotExist:
+            return None
+
+    return None
+
+
+# ============================================================
+# 🎥 UPLOAD REVIEW (FINAL + ROBUST)
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -48,53 +106,58 @@ def upload_review(request):
         print("📥 Incoming review upload:", data)
 
         # -----------------------------------------------------
-        # 1) Support both product_id and review_product_id
+        # 1) Support both product_id and review_product_id from app
         # -----------------------------------------------------
         raw_pid = data.get("product_id") or data.get("review_product_id")
 
         if not raw_pid:
             return Response(
-                {"error": "Missing product identifier (product_id or review_product_id)."},
+                {
+                    "error": "Missing product identifier. "
+                    "Send 'product_id' or 'review_product_id' from the app."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        product_obj = None
-        product_name = None
-        product_image = None
-
         # -----------------------------------------------------
-        # 2) ORDER ITEM LOGIC → handles OI-XX and product-less items
+        # 2) Resolve OrderItem snapshot safely (no MultipleObjectsReturned)
         # -----------------------------------------------------
-        try:
-            item = OrderItem.objects.get(review_product_id=str(raw_pid))
+        item = resolve_order_item_for_review(raw_pid)
 
-            # Correct actual DB fields:
-            product_name = item.product_name_snapshot
-            product_image = item.product_image_snapshot
-
-            print("🧾 Matched OrderItem:", item.id, product_name, product_image)
-
-        except OrderItem.DoesNotExist:
+        if not item:
             return Response(
-                {"error": "Invalid product identifier — no matching OrderItem."},
+                {
+                    "error": (
+                        "Invalid product identifier — no matching OrderItem found. "
+                        "Make sure review_product_id on OrderItem matches what the app sends."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # These field names must match your OrderItem model
+        product_name = getattr(item, "product_name_snapshot", None)
+        product_image_raw = getattr(item, "product_image_snapshot", None)
 
         if not product_name:
             return Response(
-                {"error": "Product name missing from order item."},
+                {"error": "Product name missing from OrderItem snapshot."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not product_image:
-            product_image = ""
+        product_image = normalize_media_value(product_image_raw)
+
+        print("🧾 Matched OrderItem:", item.id, product_name, product_image)
 
         # -----------------------------------------------------
         # 3) Validate video file
         # -----------------------------------------------------
         video_file = request.FILES.get("video")
         if not video_file:
-            return Response({"error": "Video file missing."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Video file missing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         thumbnail_image = request.FILES.get("thumbnail_image")
         thumbnail_time = data.get("thumbnail_time_ms")
@@ -114,7 +177,7 @@ def upload_review(request):
         print("✅ Video uploaded:", video_url)
 
         # -----------------------------------------------------
-        # 5) Thumbnail handling (upload manually or auto-generate)
+        # 5) Thumbnail: either uploaded image or auto-generated frame
         # -----------------------------------------------------
         if thumbnail_image:
             thumb = cloudinary.uploader.upload(
@@ -133,7 +196,7 @@ def upload_review(request):
                 thumbnail_url = ""
 
         # -----------------------------------------------------
-        # 6) Duration handling
+        # 6) Duration
         # -----------------------------------------------------
         raw_duration = data.get("duration_seconds", 0)
         try:
@@ -142,29 +205,37 @@ def upload_review(request):
             duration_seconds = 0
 
         # -----------------------------------------------------
-        # 7) Save review
+        # 7) Create VideoReview object
         # -----------------------------------------------------
+        caption = data.get("caption", "")
+        location = data.get("location", "")
+
         review = VideoReview.objects.create(
             user=user,
             video_url=video_url,
             thumbnail_url=thumbnail_url,
             cloudinary_public_id=public_id,
-
-            caption=data.get("caption", ""),
-            location=data.get("location", ""),
+            caption=caption,
+            location=location,
             duration_seconds=duration_seconds,
-
-            # PRODUCT METADATA
-            review_product_id=str(raw_pid),
-            product=None,  # always None for OI-xx, you can link later if needed
+            # Product metadata from order snapshot
+            review_product_id=str(item.review_product_id),
+            product=None,  # not linking to Product model here
             product_name=product_name,
             product_image_url=product_image,
-
             thumbnail_time_ms=thumbnail_time,
             is_public=True,
         )
 
         print("🎉 REVIEW SAVED:", review.id)
+
+        # Optionally parse and attach hashtags, if your model supports it.
+        # Example (only if VideoReview has a ManyToManyField to Hashtag named 'hashtags'):
+        # words = caption.split()
+        # tags = [w[1:] for w in words if w.startswith("#") and len(w) > 1]
+        # for t in tags:
+        #     hashtag, _ = Hashtag.objects.get_or_create(name=t.lower())
+        #     review.hashtags.add(hashtag)
 
         return Response(
             {"message": "Review uploaded successfully!", "id": review.id},
@@ -190,12 +261,16 @@ def upload_review(request):
 @permission_classes([IsAuthenticated])
 def feed_for_you(request):
     videos = VideoReview.objects.filter(
-        is_public=True, is_deleted=False, is_approved=True
+        is_public=True,
+        is_deleted=False,
+        is_approved=True,
     ).order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
-    serializer = VideoReviewSerializer(page, many=True, context={"request": request})
+    serializer = VideoReviewSerializer(
+        page, many=True, context={"request": request}
+    )
     return paginator.get_paginated_response(serializer.data)
 
 
@@ -209,12 +284,16 @@ def feed_following(request):
     ).values_list("following_id", flat=True)
 
     videos = VideoReview.objects.filter(
-        user_id__in=following_ids, is_public=True, is_deleted=False
+        user_id__in=following_ids,
+        is_public=True,
+        is_deleted=False,
     ).order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
-    serializer = VideoReviewSerializer(page, many=True, context={"request": request})
+    serializer = VideoReviewSerializer(
+        page, many=True, context={"request": request}
+    )
     return paginator.get_paginated_response(serializer.data)
 
 
@@ -222,14 +301,17 @@ def feed_following(request):
 @permission_classes([IsAuthenticated])
 def feed_trending(request):
     videos = VideoReview.objects.filter(
-        is_public=True, is_deleted=False
+        is_public=True,
+        is_deleted=False,
     ).order_by(
         -(F("likes_count") * 2 + F("comments_count") * 3 + F("views_count"))
     )
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
-    serializer = VideoReviewSerializer(page, many=True, context={"request": request})
+    serializer = VideoReviewSerializer(
+        page, many=True, context={"request": request}
+    )
     return paginator.get_paginated_response(serializer.data)
 
 
@@ -244,7 +326,10 @@ def toggle_like(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Video not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     like, created = VideoLike.objects.get_or_create(user=user, video=video)
 
@@ -266,15 +351,23 @@ def toggle_like(request, video_id):
 @permission_classes([IsAuthenticated])
 def post_comment(request, video_id):
     user = request.user
-    text = request.data.get("text", "").strip()
+    text = request.data.get("text", "").trim() if hasattr(str, "trim") else request.data.get("text", "").strip()
+    # For safety, just in case:
+    text = text.strip()
 
     if not text:
-        return Response({"detail": "Comment cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "Comment cannot be empty."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Video not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     comment = VideoComment.objects.create(video=video, user=user, text=text)
 
@@ -293,7 +386,10 @@ def get_comments(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Video not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     comments = VideoComment.objects.filter(
         video=video, is_deleted=False
@@ -310,12 +406,15 @@ def delete_comment(request, comment_id):
     try:
         comment = VideoComment.objects.get(id=comment_id, is_deleted=False)
     except VideoComment.DoesNotExist:
-        return Response({"detail": "Comment not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Comment not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     if comment.user != user:
         return Response(
-            {"detail": "You can only delete your own comments."},
-            status=status.HTTP_403_FORBIDDEN,
+          {"detail": "You can only delete your own comments."},
+          status=status.HTTP_403_FORBIDDEN,
         )
 
     comment.is_deleted = True
@@ -341,7 +440,10 @@ def toggle_save(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Video not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     save_obj, created = VideoSave.objects.get_or_create(user=user, video=video)
 
@@ -367,7 +469,10 @@ def track_view(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Video not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     VideoView.objects.create(video=video, user=user)
 
@@ -386,12 +491,18 @@ def toggle_follow(request, user_id):
     follower = request.user
 
     if follower.id == user_id:
-        return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "You cannot follow yourself."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "User not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     follow, created = UserFollow.objects.get_or_create(
         follower=follower,
@@ -414,7 +525,10 @@ def creator_videos(request, user_id):
     try:
         creator = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "User not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     videos = VideoReview.objects.filter(
         user=creator,
@@ -422,5 +536,7 @@ def creator_videos(request, user_id):
         is_deleted=False,
     ).order_by("-created_at")
 
-    serializer = VideoReviewSerializer(videos, many=True, context={"request": request})
+    serializer = VideoReviewSerializer(
+        videos, many=True, context={"request": request}
+    )
     return Response(serializer.data)
