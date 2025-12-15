@@ -1,6 +1,7 @@
 import traceback
 
 from django.conf import settings
+from django.db import models  # ✅ FIX: for models.Q / Case / When if used anywhere
 from django.db.models import Count, F
 
 from django.contrib.auth import get_user_model
@@ -95,20 +96,26 @@ def build_creator_meta_maps(request, video_list):
     Builds two fast maps for the serializer to use:
       - followers_count_map: { creator_id: followers_count }
       - following_set: set(creator_ids current user follows)
-    """
-    creator_ids = list(
-        {v.user_id for v in video_list if getattr(v, "user_id", None)}
-    )
 
+    ✅ IMPORTANT FIX:
+    - The annotate query only returns rows for users that have >=1 followers.
+    - So creators with 0 followers were "missing" -> frontend showed "—" / 0 incorrectly.
+    - We prefill all creator_ids with 0, then overwrite real counts.
+    """
+    creator_ids = list({v.user_id for v in video_list if getattr(v, "user_id", None)})
     if not creator_ids:
         return {}, set()
 
-    followers_count_map = {
-        row["following_id"]: row["c"]
-        for row in UserFollow.objects.filter(following_id__in=creator_ids)
+    # ✅ Prefill zeros for EVERY creator in the feed
+    followers_count_map = {cid: 0 for cid in creator_ids}
+
+    # Overwrite with real counts where they exist
+    for row in (
+        UserFollow.objects.filter(following_id__in=creator_ids)
         .values("following_id")
         .annotate(c=Count("id"))
-    }
+    ):
+        followers_count_map[row["following_id"]] = int(row["c"] or 0)
 
     following_set = set()
     if request.user and request.user.is_authenticated:
@@ -356,7 +363,6 @@ def toggle_like(request, video_id):
         {
             "liked": created,
             "likes_count": video.likes_count,
-            # ✅ return these too for your Player patcher
             "user_liked": created,
         }
     )
@@ -470,7 +476,7 @@ def track_view(request, video_id):
 
 
 # ============================================================
-# FOLLOW  ✅ RETURNS FOLLOWERS COUNT ALWAYS
+# FOLLOW ✅ RETURNS BOTH SHAPES
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -500,12 +506,17 @@ def toggle_follow(request, user_id):
 
     return Response(
         {
+            # ✅ ROOT (frontend patcher likes this)
+            "following": is_following,
+            "followers_count": followers_count,
+
+            # ✅ NESTED (keep)
             "user": {
                 "id": target_user.id,
                 "username": getattr(target_user, "username", ""),
                 "is_following": is_following,
-                "followers_count": followers_count,  # ✅ authoritative
-            }
+                "followers_count": followers_count,
+            },
         },
         status=status.HTTP_200_OK,
     )
@@ -528,15 +539,15 @@ def creator_videos(request, user_id):
         is_deleted=False,
     ).select_related("user").order_by("-created_at")
 
-    # for consistent user meta
     followers_count = UserFollow.objects.filter(following=creator).count()
+
     following_set = set()
     if request.user.is_authenticated:
         following_set = set(
             UserFollow.objects.filter(follower=request.user, following=creator).values_list("following_id", flat=True)
         )
 
-    followers_map = {creator.id: followers_count}
+    followers_map = {creator.id: followers_count}  # includes 0 OK
 
     serializer = VideoReviewSerializer(
         videos,
