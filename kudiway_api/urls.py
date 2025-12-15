@@ -8,7 +8,6 @@ from django.conf.urls.static import static
 
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from kudiwallet import views as wallet_views
 from orders import views as order_views
 from orders.models import PartnerListing
 
@@ -40,7 +39,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
 
     # -----------------------------------------------------
-    # User Authentication
+    # Auth
     # -----------------------------------------------------
     path("api/users/", include("users.urls")),
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
@@ -48,31 +47,11 @@ urlpatterns = [
     path("api-auth/", include("rest_framework.urls")),
 
     # -----------------------------------------------------
-    # Wallet Core
+    # Wallet (single source of truth)
     # -----------------------------------------------------
-    path("api/wallet/summary/", wallet_views.wallet_summary, name="wallet_summary"),
-    path("api/wallet/deposit/", wallet_views.deposit, name="deposit"),
-    path("api/wallet/transfer-to-savings/", wallet_views.deposit_to_savings, name="deposit_to_savings"),
-    path("api/wallet/withdraw/", wallet_views.withdraw_from_savings, name="withdraw_from_savings"),
-    path("api/wallet/transactions/", wallet_views.transaction_history, name="transaction_history"),
+    # ✅ IMPORTANT: let kudiwallet.urls define ALL wallet endpoints
+    # This prevents duplicates + avoids missing view names
     path("api/wallet/", include("kudiwallet.urls")),
-
-    # -----------------------------------------------------
-    # Credit / BNPL
-    # -----------------------------------------------------
-    path("api/wallet/credit-purchase/", wallet_views.make_credit_purchase, name="credit_purchase"),
-    path("api/wallet/repay/", wallet_views.repay_credit, name="repay_credit"),
-    path("api/wallet/credit-purchases/", wallet_views.credit_purchase_list, name="credit_purchase_list"),
-    path("api/wallet/credit-score/", wallet_views.get_credit_score, name="get_credit_score"),
-    path("api/wallet/request-limit-increase/", wallet_views.request_limit_increase, name="request_limit_increase"),
-
-    # -----------------------------------------------------
-    # KYC
-    # -----------------------------------------------------
-    path("api/kyc/upload/", wallet_views.upload_kyc, name="upload_kyc"),
-    path("api/kyc/status/", wallet_views.get_kyc_status, name="get_kyc_status"),
-    path("api/kyc/approve/<int:kyc_id>/", wallet_views.approve_kyc_admin, name="approve_kyc_admin"),
-    path("api/kyc/reject/<int:kyc_id>/", wallet_views.reject_kyc_admin, name="reject_kyc_admin"),
 
     # -----------------------------------------------------
     # Store + Orders (MAIN)
@@ -85,7 +64,7 @@ urlpatterns = [
     path("api/admin-dashboard/", include("dashboard.urls")),
 
     # -----------------------------------------------------
-    # Referral Short URLs (IMPORTANT)
+    # Referral Short URLs
     # -----------------------------------------------------
     path("r/<slug:ref_code>/", referral_redirect, name="referral_short"),
     path("checkout/<slug:ref_code>/", order_views.referral_checkout, name="referral_checkout_page"),
@@ -97,6 +76,6 @@ urlpatterns = [
 ]
 
 # -----------------------------------------------------
-# Media Files
+# Media Files (dev)
 # -----------------------------------------------------
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

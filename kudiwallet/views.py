@@ -323,9 +323,111 @@ def repay_credit(request):
 # ============================================================
 # 📦 GET ACTIVE CREDIT PURCHASES
 # ============================================================
-@api_view(["GET"])
+# ============================================================
+# 💳 MAKE CREDIT PURCHASE (BNPL) + OPTIONAL GET SUMMARY
+# ============================================================
+@api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
-def credit_purchase_list(request):
+def make_credit_purchase(request):
+    """
+    BNPL rules:
+    - Minimum 20% downpayment
+    - Flat 5% interest applied on the financed portion at repayment time
+    - 14-day due date
+
+    GET  → return active credit purchases (for screen load)
+    POST → create a new credit purchase
+    """
+    # ------------ HANDLE GET (screen loading) ------------
+    if request.method == "GET":
+        purchases = CreditPurchase.objects.filter(user=request.user, is_paid=False).order_by("due_date")
+        today = timezone.now().date()
+        results = []
+        for p in purchases:
+            overdue_days = (today - p.due_date).days
+            overdue_weeks = max(0, overdue_days // 7)
+            penalty_rate_multiplier = (Decimal("1.00") + (Decimal("0.01") * overdue_weeks))
+            total_due_preview = (p.remaining_amount * penalty_rate_multiplier).quantize(Decimal("0.01"))
+            results.append({
+                "item_name": p.item_name,
+                "remaining_amount": str(p.remaining_amount),
+                "due_date": p.due_date.isoformat(),
+                "overdue_weeks": overdue_weeks,
+                "penalty_multiplier": str(penalty_rate_multiplier),
+                "total_due_preview": str(total_due_preview),
+                "is_paid": p.is_paid,
+                "status": p.status,
+            })
+        return Response(results)
+
+    # ------------ HANDLE POST (create BNPL) ------------
+    try:
+        wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        amount = Decimal(request.data.get("amount", 0))
+        item_name = request.data.get("item_name", "Store Purchase")
+        down_payment = Decimal(request.data.get("down_payment", 0))
+
+        if amount <= 0:
+            return Response({"error": "Invalid amount."}, status=400)
+
+        min_down = (amount * Decimal("0.20")).quantize(Decimal("0.01"))
+        if down_payment < min_down:
+            return Response({"error": f"Down payment must be at least 20% (₵{min_down})."}, status=400)
+
+        if wallet.balance < down_payment:
+            return Response({"error": "Insufficient wallet funds for downpayment."}, status=400)
+
+        credit_principal = (amount - down_payment).quantize(Decimal("0.01"))
+        if credit_principal <= 0:
+            return Response({"error": "Down payment cannot cover full amount for BNPL."}, status=400)
+
+        if wallet.credit_balance + credit_principal > wallet.credit_limit:
+            return Response({"error": "Credit limit exceeded."}, status=400)
+
+        # Deduct down payment and increase credit balance
+        wallet.balance -= down_payment
+        wallet.credit_balance += credit_principal
+        wallet.save()
+
+        due_date = (timezone.now().date() + timedelta(days=14))
+        purchase = CreditPurchase.objects.create(
+            user=request.user,
+            wallet=wallet,
+            item_name=item_name,
+            total_amount=amount,
+            down_payment=down_payment,
+            credit_amount=credit_principal,
+            remaining_amount=credit_principal,
+            interest_rate=Decimal("5.00"),
+            due_date=due_date,
+            status="ACTIVE",
+            is_paid=False,
+        )
+
+        # Log transactions
+        log_transaction(request.user, "credit_purchase", credit_principal, f"BNPL principal for {item_name}")
+        log_transaction(request.user, "withdraw", down_payment, f"Down payment for {item_name}")
+
+        # Preview interest
+        interest_preview = (credit_principal * Decimal("0.05")).quantize(Decimal("0.01"))
+        total_due_preview = (credit_principal + interest_preview).quantize(Decimal("0.01"))
+
+        return Response({
+            "message": (
+                f"₵{amount:.2f} purchase made. ₵{down_payment:.2f} paid now. "
+                f"₵{total_due_preview:.2f} (incl. 5% interest) due by {due_date}."
+            ),
+            "purchase": {
+                "item_name": purchase.item_name,
+                "principal": str(credit_principal),
+                "interest_preview": str(interest_preview),
+                "total_due_preview": str(total_due_preview),
+                "due_date": due_date.isoformat(),
+            }
+        }, status=201)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
     purchases = CreditPurchase.objects.filter(user=request.user, is_paid=False)
     today = timezone.now().date()
     results = []

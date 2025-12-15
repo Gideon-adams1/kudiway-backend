@@ -229,14 +229,6 @@ def upload_review(request):
 
         print("🎉 REVIEW SAVED:", review.id)
 
-        # Optionally parse and attach hashtags, if your model supports it.
-        # Example (only if VideoReview has a ManyToManyField to Hashtag named 'hashtags'):
-        # words = caption.split()
-        # tags = [w[1:] for w in words if w.startswith("#") and len(w) > 1]
-        # for t in tags:
-        #     hashtag, _ = Hashtag.objects.get_or_create(name=t.lower())
-        #     review.hashtags.add(hashtag)
-
         return Response(
             {"message": "Review uploaded successfully!", "id": review.id},
             status=status.HTTP_201_CREATED,
@@ -351,9 +343,9 @@ def toggle_like(request, video_id):
 @permission_classes([IsAuthenticated])
 def post_comment(request, video_id):
     user = request.user
-    text = request.data.get("text", "").trim() if hasattr(str, "trim") else request.data.get("text", "").strip()
-    # For safety, just in case:
-    text = text.strip()
+
+    raw_text = request.data.get("text", "")
+    text = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
 
     if not text:
         return Response(
@@ -413,8 +405,8 @@ def delete_comment(request, comment_id):
 
     if comment.user != user:
         return Response(
-          {"detail": "You can only delete your own comments."},
-          status=status.HTTP_403_FORBIDDEN,
+            {"detail": "You can only delete your own comments."},
+            status=status.HTTP_403_FORBIDDEN,
         )
 
     comment.is_deleted = True
@@ -483,7 +475,7 @@ def track_view(request, video_id):
 
 
 # ============================================================
-# FOLLOW
+# FOLLOW ✅ FIXED: RETURN FOLLOWERS_COUNT + SHAPE FRONTEND EXPECTS
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -511,9 +503,33 @@ def toggle_follow(request, user_id):
 
     if not created:
         follow.delete()
-        return Response({"following": False})
+        followers_count = UserFollow.objects.filter(following=target_user).count()
+        return Response(
+            {
+                "user": {
+                    "id": target_user.id,
+                    "is_following": False,
+                    "followers_count": followers_count,
+                },
+                "following": False,          # kept for backward compatibility
+                "followers_count": followers_count,  # kept for backward compatibility
+            },
+            status=status.HTTP_200_OK,
+        )
 
-    return Response({"following": True})
+    followers_count = UserFollow.objects.filter(following=target_user).count()
+    return Response(
+        {
+            "user": {
+                "id": target_user.id,
+                "is_following": True,
+                "followers_count": followers_count,
+            },
+            "following": True,            # kept for backward compatibility
+            "followers_count": followers_count,  # kept for backward compatibility
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 # ============================================================

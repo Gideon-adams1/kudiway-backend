@@ -2,6 +2,7 @@ import uuid
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
+from django.db.models import Q
 
 User = settings.AUTH_USER_MODEL
 
@@ -16,6 +17,10 @@ class Hashtag(models.Model):
 
     class Meta:
         ordering = ["name"]
+        indexes = [
+            models.Index(fields=["slug"]),
+            models.Index(fields=["name"]),
+        ]
 
     def __str__(self):
         return self.name
@@ -27,23 +32,40 @@ class Hashtag(models.Model):
 
 
 # ============================================================
-# 👥 FOLLOW SYSTEM
+# 👥 FOLLOW SYSTEM (OPTIMIZED + SCALE SAFE)
 # ============================================================
 class UserFollow(models.Model):
     follower = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="following_relations",
+        db_index=True,
     )
     following = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="follower_relations",
+        db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("follower", "following")
+        constraints = [
+            # Prevent duplicate follow rows
+            models.UniqueConstraint(
+                fields=["follower", "following"],
+                name="uniq_follow_follower_following",
+            ),
+            # Prevent self-follow at DB level (in addition to view validation)
+            models.CheckConstraint(
+                check=~Q(follower=models.F("following")),
+                name="no_self_follow",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["follower", "created_at"]),
+            models.Index(fields=["following", "created_at"]),
+        ]
 
     def __str__(self):
         return f"{self.follower} → {self.following}"
@@ -63,6 +85,7 @@ class VideoReview(models.Model):
         User,
         on_delete=models.CASCADE,
         related_name="video_reviews",
+        db_index=True,
     )
 
     # ---------------------------------------------------------
@@ -72,7 +95,8 @@ class VideoReview(models.Model):
         max_length=50,
         blank=True,
         null=True,
-        help_text="Matches OrderItem.review_product_id"
+        help_text="Matches OrderItem.review_product_id",
+        db_index=True,
     )
 
     product = models.ForeignKey(
@@ -81,6 +105,7 @@ class VideoReview(models.Model):
         null=True,
         blank=True,
         related_name="video_reviews",
+        db_index=True,
     )
 
     product_name = models.CharField(max_length=255, blank=True)
@@ -108,7 +133,7 @@ class VideoReview(models.Model):
     duration_seconds = models.PositiveIntegerField(default=0)
 
     # ---------------------------------------------------------
-    # 📊 Stats
+    # 📊 Stats (denormalized counters)
     # ---------------------------------------------------------
     likes_count = models.PositiveIntegerField(default=0)
     comments_count = models.PositiveIntegerField(default=0)
@@ -119,18 +144,23 @@ class VideoReview(models.Model):
     # ---------------------------------------------------------
     # ⚙️ Moderation flags
     # ---------------------------------------------------------
-    is_public = models.BooleanField(default=True)
-    is_approved = models.BooleanField(default=True)
-    is_featured = models.BooleanField(default=False)
-    is_deleted = models.BooleanField(default=False)
+    is_public = models.BooleanField(default=True, db_index=True)
+    is_approved = models.BooleanField(default=True, db_index=True)
+    is_featured = models.BooleanField(default=False, db_index=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
 
-    country_code = models.CharField(max_length=5, blank=True)
+    country_code = models.CharField(max_length=5, blank=True, db_index=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["is_public", "is_deleted", "is_approved", "-created_at"]),
+        ]
 
     def __str__(self):
         return f"Review of {self.product_name or 'Unknown'} by {self.user}"
@@ -144,16 +174,24 @@ class VideoLike(models.Model):
         User,
         on_delete=models.CASCADE,
         related_name="video_likes",
+        db_index=True,
     )
     video = models.ForeignKey(
         VideoReview,
         on_delete=models.CASCADE,
         related_name="likes",
+        db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("user", "video")
+        constraints = [
+            models.UniqueConstraint(fields=["user", "video"], name="uniq_video_like_user_video"),
+        ]
+        indexes = [
+            models.Index(fields=["video", "created_at"]),
+            models.Index(fields=["user", "created_at"]),
+        ]
 
     def __str__(self):
         return f"{self.user} ♥ {self.video_id}"
@@ -167,16 +205,24 @@ class VideoSave(models.Model):
         User,
         on_delete=models.CASCADE,
         related_name="saved_videos",
+        db_index=True,
     )
     video = models.ForeignKey(
         VideoReview,
         on_delete=models.CASCADE,
         related_name="saves",
+        db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("user", "video")
+        constraints = [
+            models.UniqueConstraint(fields=["user", "video"], name="uniq_video_save_user_video"),
+        ]
+        indexes = [
+            models.Index(fields=["video", "created_at"]),
+            models.Index(fields=["user", "created_at"]),
+        ]
 
     def __str__(self):
         return f"{self.user} saved {self.video_id}"
@@ -192,13 +238,20 @@ class VideoView(models.Model):
         null=True,
         blank=True,
         related_name="video_views",
+        db_index=True,
     )
     video = models.ForeignKey(
         VideoReview,
         on_delete=models.CASCADE,
         related_name="views",
+        db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["video", "created_at"]),
+        ]
 
     def __str__(self):
         return f"View: {self.video_id} by {self.user or 'anonymous'}"
@@ -212,16 +265,18 @@ class VideoComment(models.Model):
         VideoReview,
         on_delete=models.CASCADE,
         related_name="comments",
+        db_index=True,
     )
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name="video_comments",
+        db_index=True,
     )
     text = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
-    is_deleted = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False, db_index=True)
 
     parent = models.ForeignKey(
         "self",
@@ -233,6 +288,10 @@ class VideoComment(models.Model):
 
     class Meta:
         ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["video", "is_deleted", "created_at"]),
+            models.Index(fields=["user", "created_at"]),
+        ]
 
     def __str__(self):
         return f"Comment by {self.user} on {self.video_id}"
@@ -255,6 +314,7 @@ class VideoReport(models.Model):
         VideoReview,
         on_delete=models.CASCADE,
         related_name="reports",
+        db_index=True,
     )
     user = models.ForeignKey(
         User,
@@ -262,14 +322,21 @@ class VideoReport(models.Model):
         null=True,
         blank=True,
         related_name="video_reports",
+        db_index=True,
     )
 
-    reason = models.CharField(max_length=20, choices=REASON_CHOICES)
+    reason = models.CharField(max_length=20, choices=REASON_CHOICES, db_index=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    handled = models.BooleanField(default=False)
+    handled = models.BooleanField(default=False, db_index=True)
     handled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["video", "created_at"]),
+            models.Index(fields=["handled", "created_at"]),
+        ]
 
     def __str__(self):
         return f"Report: {self.video_id} ({self.reason})"
