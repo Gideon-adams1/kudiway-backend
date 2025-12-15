@@ -49,19 +49,30 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
     def get_followers_count(self, obj):
         """
-        Prefer: followers_count_map from view context (fast + consistent).
-        Since views.py now PREFILLS zeros for every creator in the feed,
-        this returns a real number (including 0) with no DB hit.
+        Prefer: followers_count_map from view context (fast).
+        IMPORTANT:
+        - Do NOT coerce missing/None into 0.
+        - Only return 0 if it is truly 0 (explicit).
         """
         followers_map = self.context.get("followers_count_map") if isinstance(self.context, dict) else None
-        if isinstance(followers_map, dict) and obj.id in followers_map:
-            return int(followers_map.get(obj.id) or 0)
 
-        # Fallback only when context map is not provided (e.g., admin uses serializer)
+        if isinstance(followers_map, dict) and obj.id in followers_map:
+            val = followers_map.get(obj.id)
+
+            # If the map purposely says "unknown", keep it unknown.
+            if val is None:
+                return None
+
+            try:
+                return int(val)
+            except Exception:
+                return None
+
+        # Fallback: DB
         try:
             return UserFollow.objects.filter(following=obj).count()
         except Exception:
-            return 0
+            return None
 
     def get_is_following(self, obj):
         """
