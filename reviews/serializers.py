@@ -1,13 +1,11 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.db.models import Count
 
 from .models import (
     VideoReview,
     VideoLike,
     VideoComment,
     VideoSave,
-    VideoView,
     UserFollow,
     Hashtag,
 )
@@ -16,7 +14,7 @@ User = get_user_model()
 
 
 # ============================================================
-# USER MINI SERIALIZER (FAST + followers_count + is_following)
+# USER MINI SERIALIZER
 # ============================================================
 class UserMiniSerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
@@ -27,23 +25,11 @@ class UserMiniSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "avatar", "followers_count", "is_following"]
 
-    def _get_request(self):
+    def _req(self):
         return self.context.get("request") if isinstance(self.context, dict) else None
 
-    def _get_request_user(self):
-        req = self._get_request()
-        if not req or not hasattr(req, "user") or not req.user:
-            return None
-        return req.user
-
     def get_avatar(self, obj):
-        """
-        Priority:
-        1) Profile.profile_picture (absolute URL if possible)
-        2) ui-avatars fallback
-        """
-        req = self._get_request()
-
+        req = self._req()
         try:
             profile = getattr(obj, "profile", None)
             pic = getattr(profile, "profile_picture", None)
@@ -55,28 +41,22 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
                 if req and isinstance(url, str) and url.startswith("/"):
                     return req.build_absolute_uri(url)
-
                 return url
         except Exception:
             pass
 
-        return f"https://ui-avatars.com/api/?name={getattr(obj, 'username', 'User')}"
+        return f"https://ui-avatars.com/api/?name={obj.username}"
 
     def get_followers_count(self, obj):
         """
-        Uses precomputed context map if provided to avoid N+1 queries.
-        context["followers_count_map"] = { "<user_id>": <count>, ... }
+        Prefer: followers_count_map from view context (fast + consistent).
+        Fallback: DB count.
         """
-        try:
-            m = self.context.get("followers_count_map") if isinstance(self.context, dict) else None
-            if isinstance(m, dict):
-                v = m.get(str(obj.id))
-                if v is not None:
-                    return int(v)
-        except Exception:
-            pass
+        followers_map = self.context.get("followers_count_map") if isinstance(self.context, dict) else None
+        if isinstance(followers_map, dict):
+            if obj.id in followers_map:
+                return int(followers_map.get(obj.id) or 0)
 
-        # Fallback (works but slower)
         try:
             return UserFollow.objects.filter(following=obj).count()
         except Exception:
@@ -84,23 +64,19 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
     def get_is_following(self, obj):
         """
-        Uses precomputed following set if provided.
-        context["following_id_set"] = set(["2","5",...]) meaning request.user follows these.
+        Prefer: following_set from view context.
+        Fallback: DB exists.
         """
-        user = self._get_request_user()
-        if not user or not user.is_authenticated:
+        req = self._req()
+        if not req or not getattr(req, "user", None) or not req.user.is_authenticated:
             return False
 
-        try:
-            s = self.context.get("following_id_set") if isinstance(self.context, dict) else None
-            if isinstance(s, (set, list, tuple)):
-                return str(obj.id) in set(map(str, s))
-        except Exception:
-            pass
+        following_set = self.context.get("following_set") if isinstance(self.context, dict) else None
+        if isinstance(following_set, (set, list, tuple)):
+            return obj.id in set(following_set)
 
-        # Fallback
         try:
-            return UserFollow.objects.filter(follower=user, following=obj).exists()
+            return UserFollow.objects.filter(follower=req.user, following=obj).exists()
         except Exception:
             return False
 
@@ -122,14 +98,7 @@ class VideoCommentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = VideoComment
-        fields = [
-            "id",
-            "user",
-            "text",
-            "created_at",
-            "is_deleted",
-            "parent",
-        ]
+        fields = ["id", "user", "text", "created_at", "is_deleted", "parent"]
 
 
 # ============================================================
@@ -142,7 +111,7 @@ class VideoReviewSerializer(serializers.ModelSerializer):
     hashtag_ids = serializers.ListField(
         child=serializers.IntegerField(),
         write_only=True,
-        required=False
+        required=False,
     )
 
     product_id = serializers.SerializerMethodField()
@@ -150,11 +119,10 @@ class VideoReviewSerializer(serializers.ModelSerializer):
     product_image_url = serializers.SerializerMethodField()
     review_product_id = serializers.SerializerMethodField()
 
-    # Keep old naming
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
 
-    # Frontend expects these
+    # aliases expected by your player
     user_liked = serializers.SerializerMethodField()
     user_saved = serializers.SerializerMethodField()
 
@@ -169,27 +137,22 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "caption",
             "location",
             "duration_seconds",
-
             "review_product_id",
             "product_id",
             "product_name",
             "product_image_url",
-
             "likes_count",
             "comments_count",
             "views_count",
             "saves_count",
             "shares_count",
-
             "is_liked",
             "is_saved",
             "user_liked",
             "user_saved",
-
             "is_public",
             "is_featured",
             "created_at",
-
             "hashtags",
             "hashtag_ids",
         ]
@@ -205,19 +168,11 @@ class VideoReviewSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
-    def _get_request_user(self):
-        req = self.context.get("request") if isinstance(self.context, dict) else None
-        if not req or not hasattr(req, "user") or not req.user:
-            return None
-        return req.user
-
     def create(self, validated_data):
         hashtag_ids = validated_data.pop("hashtag_ids", [])
         review = VideoReview.objects.create(**validated_data)
-
         if hashtag_ids:
             review.hashtags.set(hashtag_ids)
-
         return review
 
     def get_review_product_id(self, obj):
@@ -247,38 +202,20 @@ class VideoReviewSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+    def _user(self):
+        req = self.context.get("request") if isinstance(self.context, dict) else None
+        return getattr(req, "user", None)
+
     def get_is_liked(self, obj):
-        user = self._get_request_user()
+        user = self._user()
         if not user or not user.is_authenticated:
             return False
-
-        # ✅ Use precomputed map if provided
-        try:
-            liked_map = self.context.get("liked_map") if isinstance(self.context, dict) else None
-            if isinstance(liked_map, dict):
-                v = liked_map.get(str(obj.id))
-                if v is not None:
-                    return bool(v)
-        except Exception:
-            pass
-
         return VideoLike.objects.filter(user=user, video=obj).exists()
 
     def get_is_saved(self, obj):
-        user = self._get_request_user()
+        user = self._user()
         if not user or not user.is_authenticated:
             return False
-
-        # ✅ Use precomputed map if provided
-        try:
-            saved_map = self.context.get("saved_map") if isinstance(self.context, dict) else None
-            if isinstance(saved_map, dict):
-                v = saved_map.get(str(obj.id))
-                if v is not None:
-                    return bool(v)
-        except Exception:
-            pass
-
         return VideoSave.objects.filter(user=user, video=obj).exists()
 
     def get_user_liked(self, obj):

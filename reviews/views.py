@@ -1,7 +1,8 @@
 import traceback
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import Count, F
+
 from django.contrib.auth import get_user_model
 
 from rest_framework.decorators import api_view, permission_classes
@@ -51,13 +52,11 @@ def normalize_media_value(value):
         return value
 
     if isinstance(value, dict):
-        # common keys from Cloudinary / DRF serializers
         for key in ("secure_url", "url", "path", "src", "image", "file"):
             v = value.get(key)
             if isinstance(v, str):
                 return v
 
-    # Fallback: string representation
     return str(value)
 
 
@@ -73,12 +72,10 @@ def resolve_order_item_for_review(raw_pid):
     """
     pid_str = str(raw_pid)
 
-    # First: use review_product_id matches, pick the latest
     qs = OrderItem.objects.filter(review_product_id=pid_str).order_by("-id")
     if qs.exists():
         return qs.first()
 
-    # Second: maybe the frontend sent the actual OrderItem pk (numeric)
     try:
         pid_int = int(pid_str)
     except (ValueError, TypeError):
@@ -93,6 +90,38 @@ def resolve_order_item_for_review(raw_pid):
     return None
 
 
+def build_creator_meta_maps(request, video_list):
+    """
+    Builds two fast maps for the serializer to use:
+      - followers_count_map: { creator_id: followers_count }
+      - following_set: set(creator_ids current user follows)
+    """
+    creator_ids = list(
+        {v.user_id for v in video_list if getattr(v, "user_id", None)}
+    )
+
+    if not creator_ids:
+        return {}, set()
+
+    followers_count_map = {
+        row["following_id"]: row["c"]
+        for row in UserFollow.objects.filter(following_id__in=creator_ids)
+        .values("following_id")
+        .annotate(c=Count("id"))
+    }
+
+    following_set = set()
+    if request.user and request.user.is_authenticated:
+        following_set = set(
+            UserFollow.objects.filter(
+                follower=request.user,
+                following_id__in=creator_ids,
+            ).values_list("following_id", flat=True)
+        )
+
+    return followers_count_map, following_set
+
+
 # ============================================================
 # 🎥 UPLOAD REVIEW (FINAL + ROBUST)
 # ============================================================
@@ -105,11 +134,7 @@ def upload_review(request):
 
         print("📥 Incoming review upload:", data)
 
-        # -----------------------------------------------------
-        # 1) Support both product_id and review_product_id from app
-        # -----------------------------------------------------
         raw_pid = data.get("product_id") or data.get("review_product_id")
-
         if not raw_pid:
             return Response(
                 {
@@ -119,11 +144,7 @@ def upload_review(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # -----------------------------------------------------
-        # 2) Resolve OrderItem snapshot safely (no MultipleObjectsReturned)
-        # -----------------------------------------------------
         item = resolve_order_item_for_review(raw_pid)
-
         if not item:
             return Response(
                 {
@@ -135,7 +156,6 @@ def upload_review(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # These field names must match your OrderItem model
         product_name = getattr(item, "product_name_snapshot", None)
         product_image_raw = getattr(item, "product_image_snapshot", None)
 
@@ -147,11 +167,6 @@ def upload_review(request):
 
         product_image = normalize_media_value(product_image_raw)
 
-        print("🧾 Matched OrderItem:", item.id, product_name, product_image)
-
-        # -----------------------------------------------------
-        # 3) Validate video file
-        # -----------------------------------------------------
         video_file = request.FILES.get("video")
         if not video_file:
             return Response(
@@ -162,9 +177,6 @@ def upload_review(request):
         thumbnail_image = request.FILES.get("thumbnail_image")
         thumbnail_time = data.get("thumbnail_time_ms")
 
-        # -----------------------------------------------------
-        # 4) Upload video → Cloudinary
-        # -----------------------------------------------------
         uploaded_video = cloudinary.uploader.upload_large(
             video_file,
             resource_type="video",
@@ -174,11 +186,6 @@ def upload_review(request):
         video_url = uploaded_video["secure_url"]
         public_id = uploaded_video["public_id"]
 
-        print("✅ Video uploaded:", video_url)
-
-        # -----------------------------------------------------
-        # 5) Thumbnail: either uploaded image or auto-generated frame
-        # -----------------------------------------------------
         if thumbnail_image:
             thumb = cloudinary.uploader.upload(
                 thumbnail_image,
@@ -195,18 +202,12 @@ def upload_review(request):
             else:
                 thumbnail_url = ""
 
-        # -----------------------------------------------------
-        # 6) Duration
-        # -----------------------------------------------------
         raw_duration = data.get("duration_seconds", 0)
         try:
             duration_seconds = int(raw_duration)
         except Exception:
             duration_seconds = 0
 
-        # -----------------------------------------------------
-        # 7) Create VideoReview object
-        # -----------------------------------------------------
         caption = data.get("caption", "")
         location = data.get("location", "")
 
@@ -218,16 +219,13 @@ def upload_review(request):
             caption=caption,
             location=location,
             duration_seconds=duration_seconds,
-            # Product metadata from order snapshot
             review_product_id=str(item.review_product_id),
-            product=None,  # not linking to Product model here
+            product=None,
             product_name=product_name,
             product_image_url=product_image,
             thumbnail_time_ms=thumbnail_time,
             is_public=True,
         )
-
-        print("🎉 REVIEW SAVED:", review.id)
 
         return Response(
             {"message": "Review uploaded successfully!", "id": review.id},
@@ -238,10 +236,7 @@ def upload_review(request):
         print("❌ UPLOAD REVIEW ERROR:", e)
         print(traceback.format_exc())
         return Response(
-            {
-                "error": "Server failed to upload review.",
-                "details": str(e),
-            },
+            {"error": "Server failed to upload review.", "details": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
@@ -256,12 +251,21 @@ def feed_for_you(request):
         is_public=True,
         is_deleted=False,
         is_approved=True,
-    ).order_by("-created_at")
+    ).select_related("user").order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
+
+    followers_map, following_set = build_creator_meta_maps(request, page)
+
     serializer = VideoReviewSerializer(
-        page, many=True, context={"request": request}
+        page,
+        many=True,
+        context={
+            "request": request,
+            "followers_count_map": followers_map,
+            "following_set": following_set,
+        },
     )
     return paginator.get_paginated_response(serializer.data)
 
@@ -279,12 +283,21 @@ def feed_following(request):
         user_id__in=following_ids,
         is_public=True,
         is_deleted=False,
-    ).order_by("-created_at")
+    ).select_related("user").order_by("-created_at")
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
+
+    followers_map, following_set = build_creator_meta_maps(request, page)
+
     serializer = VideoReviewSerializer(
-        page, many=True, context={"request": request}
+        page,
+        many=True,
+        context={
+            "request": request,
+            "followers_count_map": followers_map,
+            "following_set": following_set,
+        },
     )
     return paginator.get_paginated_response(serializer.data)
 
@@ -292,17 +305,28 @@ def feed_following(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def feed_trending(request):
-    videos = VideoReview.objects.filter(
-        is_public=True,
-        is_deleted=False,
-    ).order_by(
-        -(F("likes_count") * 2 + F("comments_count") * 3 + F("views_count"))
+    videos = (
+        VideoReview.objects.filter(is_public=True, is_deleted=False)
+        .select_related("user")
+        .annotate(
+            trending_score=(F("likes_count") * 2 + F("comments_count") * 3 + F("views_count"))
+        )
+        .order_by("-trending_score", "-created_at")
     )
 
     paginator = StandardResultsSetPagination()
     page = paginator.paginate_queryset(videos, request)
+
+    followers_map, following_set = build_creator_meta_maps(request, page)
+
     serializer = VideoReviewSerializer(
-        page, many=True, context={"request": request}
+        page,
+        many=True,
+        context={
+            "request": request,
+            "followers_count_map": followers_map,
+            "following_set": following_set,
+        },
     )
     return paginator.get_paginated_response(serializer.data)
 
@@ -318,22 +342,24 @@ def toggle_like(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response(
-            {"detail": "Video not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     like, created = VideoLike.objects.get_or_create(user=user, video=video)
 
     if not created:
         like.delete()
-        video.likes_count = VideoLike.objects.filter(video=video).count()
-        video.save(update_fields=["likes_count"])
-        return Response({"liked": False, "likes_count": video.likes_count})
 
     video.likes_count = VideoLike.objects.filter(video=video).count()
     video.save(update_fields=["likes_count"])
-    return Response({"liked": True, "likes_count": video.likes_count})
+
+    return Response(
+        {
+            "liked": created,
+            "likes_count": video.likes_count,
+            # ✅ return these too for your Player patcher
+            "user_liked": created,
+        }
+    )
 
 
 # ============================================================
@@ -343,32 +369,22 @@ def toggle_like(request, video_id):
 @permission_classes([IsAuthenticated])
 def post_comment(request, video_id):
     user = request.user
-
-    raw_text = request.data.get("text", "")
-    text = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
+    text = (request.data.get("text") or "").strip()
 
     if not text:
-        return Response(
-            {"detail": "Comment cannot be empty."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"detail": "Comment cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response(
-            {"detail": "Video not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     comment = VideoComment.objects.create(video=video, user=user, text=text)
 
-    video.comments_count = VideoComment.objects.filter(
-        video=video, is_deleted=False
-    ).count()
+    video.comments_count = VideoComment.objects.filter(video=video, is_deleted=False).count()
     video.save(update_fields=["comments_count"])
 
-    serializer = VideoCommentSerializer(comment)
+    serializer = VideoCommentSerializer(comment, context={"request": request})
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -378,15 +394,10 @@ def get_comments(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response(
-            {"detail": "Video not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    comments = VideoComment.objects.filter(
-        video=video, is_deleted=False
-    ).order_by("-created_at")
-    serializer = VideoCommentSerializer(comments, many=True)
+    comments = VideoComment.objects.filter(video=video, is_deleted=False).select_related("user").order_by("-created_at")
+    serializer = VideoCommentSerializer(comments, many=True, context={"request": request})
     return Response(serializer.data)
 
 
@@ -398,24 +409,16 @@ def delete_comment(request, comment_id):
     try:
         comment = VideoComment.objects.get(id=comment_id, is_deleted=False)
     except VideoComment.DoesNotExist:
-        return Response(
-            {"detail": "Comment not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Comment not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if comment.user != user:
-        return Response(
-            {"detail": "You can only delete your own comments."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        return Response({"detail": "You can only delete your own comments."}, status=status.HTTP_403_FORBIDDEN)
 
     comment.is_deleted = True
     comment.save(update_fields=["is_deleted"])
 
     video = comment.video
-    video.comments_count = VideoComment.objects.filter(
-        video=video, is_deleted=False
-    ).count()
+    video.comments_count = VideoComment.objects.filter(video=video, is_deleted=False).count()
     video.save(update_fields=["comments_count"])
 
     return Response({"detail": "Comment deleted."}, status=status.HTTP_200_OK)
@@ -432,22 +435,17 @@ def toggle_save(request, video_id):
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response(
-            {"detail": "Video not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     save_obj, created = VideoSave.objects.get_or_create(user=user, video=video)
 
     if not created:
         save_obj.delete()
-        video.saves_count = VideoSave.objects.filter(video=video).count()
-        video.save(update_fields=["saves_count"])
-        return Response({"saved": False, "saves_count": video.saves_count})
 
     video.saves_count = VideoSave.objects.filter(video=video).count()
     video.save(update_fields=["saves_count"])
-    return Response({"saved": True, "saves_count": video.saves_count})
+
+    return Response({"saved": created, "saves_count": video.saves_count, "user_saved": created})
 
 
 # ============================================================
@@ -456,15 +454,12 @@ def toggle_save(request, video_id):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def track_view(request, video_id):
-    user = request.user if request.user.is_authenticated else None
+    user = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
 
     try:
         video = VideoReview.objects.get(id=video_id, is_deleted=False)
     except VideoReview.DoesNotExist:
-        return Response(
-            {"detail": "Video not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
     VideoView.objects.create(video=video, user=user)
 
@@ -475,7 +470,7 @@ def track_view(request, video_id):
 
 
 # ============================================================
-# FOLLOW ✅ FIXED: RETURN FOLLOWERS_COUNT + SHAPE FRONTEND EXPECTS
+# FOLLOW  ✅ RETURNS FOLLOWERS COUNT ALWAYS
 # ============================================================
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -483,18 +478,12 @@ def toggle_follow(request, user_id):
     follower = request.user
 
     if follower.id == user_id:
-        return Response(
-            {"detail": "You cannot follow yourself."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         target_user = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response(
-            {"detail": "User not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
     follow, created = UserFollow.objects.get_or_create(
         follower=follower,
@@ -503,30 +492,20 @@ def toggle_follow(request, user_id):
 
     if not created:
         follow.delete()
-        followers_count = UserFollow.objects.filter(following=target_user).count()
-        return Response(
-            {
-                "user": {
-                    "id": target_user.id,
-                    "is_following": False,
-                    "followers_count": followers_count,
-                },
-                "following": False,          # kept for backward compatibility
-                "followers_count": followers_count,  # kept for backward compatibility
-            },
-            status=status.HTTP_200_OK,
-        )
+        is_following = False
+    else:
+        is_following = True
 
     followers_count = UserFollow.objects.filter(following=target_user).count()
+
     return Response(
         {
             "user": {
                 "id": target_user.id,
-                "is_following": True,
-                "followers_count": followers_count,
-            },
-            "following": True,            # kept for backward compatibility
-            "followers_count": followers_count,  # kept for backward compatibility
+                "username": getattr(target_user, "username", ""),
+                "is_following": is_following,
+                "followers_count": followers_count,  # ✅ authoritative
+            }
         },
         status=status.HTTP_200_OK,
     )
@@ -541,18 +520,31 @@ def creator_videos(request, user_id):
     try:
         creator = User.objects.get(id=user_id)
     except User.DoesNotExist:
-        return Response(
-            {"detail": "User not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
     videos = VideoReview.objects.filter(
         user=creator,
         is_public=True,
         is_deleted=False,
-    ).order_by("-created_at")
+    ).select_related("user").order_by("-created_at")
+
+    # for consistent user meta
+    followers_count = UserFollow.objects.filter(following=creator).count()
+    following_set = set()
+    if request.user.is_authenticated:
+        following_set = set(
+            UserFollow.objects.filter(follower=request.user, following=creator).values_list("following_id", flat=True)
+        )
+
+    followers_map = {creator.id: followers_count}
 
     serializer = VideoReviewSerializer(
-        videos, many=True, context={"request": request}
+        videos,
+        many=True,
+        context={
+            "request": request,
+            "followers_count_map": followers_map,
+            "following_set": following_set,
+        },
     )
     return Response(serializer.data)
