@@ -28,6 +28,15 @@ class UserMiniSerializer(serializers.ModelSerializer):
     def _req(self):
         return self.context.get("request") if isinstance(self.context, dict) else None
 
+    def _abs_if_needed(self, url):
+        req = self._req()
+        if req and isinstance(url, str) and url.startswith("/"):
+            try:
+                return req.build_absolute_uri(url)
+            except Exception:
+                return url
+        return url
+
     def get_avatar(self, obj):
         req = self._req()
         try:
@@ -39,24 +48,37 @@ class UserMiniSerializer(serializers.ModelSerializer):
                 except Exception:
                     url = str(pic)
 
-                if req and isinstance(url, str) and url.startswith("/"):
-                    return req.build_absolute_uri(url)
-                return url
+                url = self._abs_if_needed(url)
+                return url if isinstance(url, str) else str(url)
         except Exception:
             pass
 
-        return f"https://ui-avatars.com/api/?name={obj.username}"
+        username = getattr(obj, "username", "") or "User"
+        return f"https://ui-avatars.com/api/?name={username}"
 
     def get_followers_count(self, obj):
         """
-        Prefer: followers_count_map from view context (fast + consistent).
-        Fallback: DB count.
+        ✅ IMPORTANT RULE:
+        - If followers_count_map has a value for this user -> return it (even 0).
+        - If followers_count_map DOES NOT contain this user -> return None (unknown),
+          so the frontend never flashes fake 0.
+        - Only fallback to DB count when map is not provided at all.
         """
         followers_map = self.context.get("followers_count_map") if isinstance(self.context, dict) else None
+
+        # If the view provided the map, use it as source of truth:
+        # - present in map => return int(value) (allow 0)
+        # - missing from map => return None (unknown)
         if isinstance(followers_map, dict):
             if obj.id in followers_map:
-                return int(followers_map.get(obj.id) or 0)
+                v = followers_map.get(obj.id)
+                try:
+                    return int(v) if v is not None else 0
+                except Exception:
+                    return 0
+            return None  # ✅ do NOT default to 0
 
+        # If no map at all, fallback to DB
         try:
             return UserFollow.objects.filter(following=obj).count()
         except Exception:
@@ -73,7 +95,10 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
         following_set = self.context.get("following_set") if isinstance(self.context, dict) else None
         if isinstance(following_set, (set, list, tuple)):
-            return obj.id in set(following_set)
+            try:
+                return obj.id in set(following_set)
+            except Exception:
+                return False
 
         try:
             return UserFollow.objects.filter(follower=req.user, following=obj).exists()
