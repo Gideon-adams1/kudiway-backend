@@ -46,6 +46,103 @@ def build_full_url(request, image):
 
 
 # ============================================================
+# 🧩 CATEGORY → SPECS SCHEMA (Category-based product specs)
+# ============================================================
+CATEGORY_SPEC_SCHEMA = {
+    "Phones": {
+        "required": {
+            "brand": "str",
+            "model": "str",
+            "storage_gb": "num",
+            "ram_gb": "num",
+        },
+        "optional": {
+            "battery_mah": "num",
+            "screen_in": "num",
+            "camera": "str",           # e.g. "50+12+10"
+            "os": "str",
+            "network": "str",          # e.g. "4G", "5G"
+            "condition": "str",        # e.g. "New", "Used"
+            "warranty_months": "num",
+        },
+    },
+    "Accessories": {
+        "required": {
+            "type": "str",             # e.g. "Charger", "Earbuds", "Case"
+        },
+        "optional": {
+            "brand": "str",
+            "compatibility": "str",    # e.g. "USB-C", "iPhone", "Android"
+            "power_w": "num",
+            "material": "str",
+            "condition": "str",
+        },
+    },
+    "Electronics": {
+        "required": {
+            "brand": "str",
+        },
+        "optional": {
+            "model": "str",
+            "power_w": "num",
+            "voltage": "str",          # e.g. "220V"
+            "capacity": "str",         # e.g. "1.5L"
+            "condition": "str",
+            "warranty_months": "num",
+        },
+    },
+    "Gadgets": {
+        "required": {
+            "brand": "str",
+        },
+        "optional": {
+            "model": "str",
+            "battery_mah": "num",
+            "connectivity": "str",     # e.g. "Bluetooth", "Wi-Fi"
+            "condition": "str",
+            "warranty_months": "num",
+        },
+    },
+    "Fashion": {
+        "required": {
+            "size": "str",             # e.g. "S", "M", "L", "XL", "42"
+        },
+        "optional": {
+            "brand": "str",
+            "color": "str",
+            "material": "str",
+            "gender": "str",
+            "condition": "str",
+        },
+    },
+    "Other": {
+        "required": {},
+        "optional": {},
+    },
+}
+
+
+def _coerce_spec_value(expected_type: str, value):
+    """
+    expected_type: "str" | "num"
+    Coerces values safely so API stays consistent.
+    """
+    if value is None:
+        return None
+
+    if expected_type == "str":
+        return str(value).strip()
+
+    if expected_type == "num":
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    return value
+
+
+# ============================================================
 # 🛍️ PRODUCT SERIALIZER
 # (Used everywhere: Store, PartnerListing, etc.)
 # ============================================================
@@ -54,6 +151,9 @@ class ProductSerializer(serializers.ModelSerializer):
     oldPrice = serializers.DecimalField(
         source="old_price", max_digits=10, decimal_places=2, read_only=True
     )
+
+    # ✅ NEW: Category-based specs (JSON)
+    specs = serializers.JSONField(required=False)
 
     # 5 images guaranteed
     image = serializers.SerializerMethodField()
@@ -71,6 +171,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "price",
             "oldPrice",
             "category",
+            "specs",         # ✅ NEW
             "rating",
             "stock",
             "image",
@@ -81,6 +182,69 @@ class ProductSerializer(serializers.ModelSerializer):
             "vendor_name",
             "created_at",
         ]
+
+    def validate(self, attrs):
+        """
+        Enforce category-specific spec fields.
+
+        - Phones must include: brand, model, storage_gb, ram_gb
+        - Fashion must include: size
+        - Electronics/Gadgets require: brand
+        - Accessories require: type
+        - Other can be empty {}
+
+        Also coerces numeric strings to numbers where applicable.
+        """
+        category = attrs.get("category") or (self.instance.category if self.instance else None)
+        category = category or "Other"
+
+        schema = CATEGORY_SPEC_SCHEMA.get(category) or CATEGORY_SPEC_SCHEMA["Other"]
+        required = schema.get("required", {})
+        optional = schema.get("optional", {})
+
+        incoming_specs = attrs.get("specs", None)
+
+        # If not provided on update, use existing
+        if incoming_specs is None and self.instance:
+            incoming_specs = getattr(self.instance, "specs", {}) or {}
+
+        if incoming_specs is None:
+            incoming_specs = {}
+
+        if not isinstance(incoming_specs, dict):
+            raise serializers.ValidationError({"specs": "Specs must be a JSON object."})
+
+        cleaned = {}
+
+        # Required fields
+        for key, t in required.items():
+            if key not in incoming_specs or incoming_specs.get(key) in ["", None]:
+                raise serializers.ValidationError(
+                    {"specs": f"'{key}' is required for category '{category}'."}
+                )
+            v = _coerce_spec_value(t, incoming_specs.get(key))
+            if v in ["", None]:
+                raise serializers.ValidationError({"specs": f"'{key}' must be a valid {t}."})
+            cleaned[key] = v
+
+        # Optional fields
+        for key, t in optional.items():
+            if key in incoming_specs and incoming_specs.get(key) not in ["", None]:
+                v = _coerce_spec_value(t, incoming_specs.get(key))
+                if v in ["", None]:
+                    raise serializers.ValidationError(
+                        {"specs": f"'{key}' must be a valid {t} if provided."}
+                    )
+                cleaned[key] = v
+
+        # Allow extra keys ONLY for Other (so it stays flexible)
+        if category == "Other":
+            for k, v in incoming_specs.items():
+                if k not in cleaned and v not in [None, ""]:
+                    cleaned[k] = v
+
+        attrs["specs"] = cleaned
+        return attrs
 
     def get_image(self, obj):
         return build_full_url(self.context.get("request"), obj.image)
@@ -186,14 +350,10 @@ class PartnerListingSerializer(serializers.ModelSerializer):
 # ============================================================
 class OrderItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
-    product_name = serializers.CharField(
-        source="product_name_snapshot", read_only=True
-    )
+    product_name = serializers.CharField(source="product_name_snapshot", read_only=True)
     image = serializers.SerializerMethodField()
     line_total = serializers.SerializerMethodField()
-    partner = serializers.CharField(
-        source="partner.username", read_only=True, default=None
-    )
+    partner = serializers.CharField(source="partner.username", read_only=True, default=None)
 
     class Meta:
         model = OrderItem
@@ -244,5 +404,4 @@ class OrderSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
         ]
-
         read_only_fields = ["id", "user", "created_at"]
