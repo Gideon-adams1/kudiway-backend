@@ -1,9 +1,10 @@
 from decimal import Decimal
+import uuid
+
+from cloudinary.models import CloudinaryField
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
-import uuid
-from cloudinary.models import CloudinaryField
 
 
 # ============================================================
@@ -26,6 +27,11 @@ class Product(models.Model):
         choices=CATEGORY_CHOICES,
         default="Other",
     )
+
+    # ✅ NEW: category-based specs (JSON object)
+    # Example (Phones): {"brand":"Samsung","model":"S22","storage_gb":128,"ram_gb":8}
+    specs = models.JSONField(default=dict, blank=True)
+
     price = models.DecimalField(max_digits=10, decimal_places=2)
     old_price = models.DecimalField(
         max_digits=10,
@@ -50,22 +56,22 @@ class Product(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ["-created_at"]
+
     def __str__(self):
         return self.name
 
     @property
     def discount_percent(self):
         if self.old_price and self.old_price > 0:
-            return round(
-                ((self.old_price - self.price) / self.old_price) * 100, 1
-            )
+            return round(((self.old_price - self.price) / self.old_price) * 100, 1)
         return 0
 
     def save(self, *args, **kwargs):
         """
         Keep Product.image as a CloudinaryField.
-        URL normalization is now handled in serializers, so we don't
-        overwrite the field with a plain string.
+        URL normalization is handled in serializers.
         """
         super().save(*args, **kwargs)
 
@@ -85,8 +91,12 @@ class PartnerListing(models.Model):
         related_name="partner_products",
     )
 
-    markup = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    final_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True)
+    # ✅ Use Decimal default (avoid float default)
+    markup = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    # ✅ Must be nullable OR have a default, because it is computed in save()
+    final_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
     referral_code = models.CharField(max_length=50, unique=True, blank=True)
     referral_url = models.URLField(blank=True, null=True)
     clicks = models.PositiveIntegerField(default=0)
@@ -98,6 +108,9 @@ class PartnerListing(models.Model):
     )
     slug = models.SlugField(unique=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
     def save(self, *args, **kwargs):
         base = self.product.price or Decimal("0.00")
@@ -177,13 +190,16 @@ class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["-created_at"]
+
     def __str__(self):
         return f"Order #{self.id} — {self.user} — ₵{self.total_amount}"
 
     def recompute_totals(self):
         subtotal = Decimal("0.00")
         for item in self.items.all():
-            subtotal += item.price * item.quantity
+            subtotal += (item.price or Decimal("0.00")) * item.quantity
         self.subtotal_amount = subtotal
         self.total_amount = subtotal
         return self.total_amount
@@ -205,11 +221,18 @@ class Order(models.Model):
             profile = Profile.objects.get(user=self.user)
             profile.total_spent += float(self.total_amount)
 
+            # ✅ kyc_profile safety (avoid crash if missing)
+            kyc_ok = False
+            try:
+                kyc_ok = self.user.kyc_profile.status == "Approved"
+            except Exception:
+                kyc_ok = False
+
             qualifies = (
                 profile.total_spent >= 500
                 and profile.followers_count >= 1000
                 and profile.video_reviews_count >= 1
-                and self.user.kyc_profile.status == "Approved"
+                and kyc_ok
             )
 
             if qualifies:
@@ -221,8 +244,8 @@ class Order(models.Model):
         if is_update and self.status in ["paid", "delivered"]:
             for item in self.items.all():
                 if item.partner and item.product:
-                    base_price = getattr(item.product, "price", Decimal("0.00"))
-                    unit_profit = max(item.price - base_price, Decimal("0.00"))
+                    base_price = getattr(item.product, "price", Decimal("0.00")) or Decimal("0.00")
+                    unit_profit = max((item.price or Decimal("0.00")) - base_price, Decimal("0.00"))
                     line_profit = unit_profit * item.quantity
 
                     if line_profit > 0:
@@ -232,12 +255,8 @@ class Order(models.Model):
                         ).first()
                         if listing:
                             listing.sales_count += item.quantity
-                            listing.total_profit = (
-                                listing.total_profit or Decimal("0.00")
-                            ) + line_profit
-                            listing.save(
-                                update_fields=["sales_count", "total_profit"]
-                            )
+                            listing.total_profit = (listing.total_profit or Decimal("0.00")) + line_profit
+                            listing.save(update_fields=["sales_count", "total_profit"])
 
 
 # ============================================================
@@ -289,6 +308,9 @@ class OrderItem(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ["-created_at"]
+
     def __str__(self):
         if self.product_name_snapshot:
             return f"OrderItem #{self.id} — {self.product_name_snapshot}"
@@ -317,10 +339,6 @@ class OrderItem(models.Model):
 
         # -------- Stable review_product_id --------
         if not self.review_product_id:
-            if self.product:
-                rid = str(self.product.id)
-            else:
-                rid = f"OI-{self.id}"
-
+            rid = str(self.product.id) if self.product else f"OI-{self.id}"
             OrderItem.objects.filter(pk=self.pk).update(review_product_id=rid)
             self.review_product_id = rid
