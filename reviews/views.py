@@ -2,7 +2,7 @@ import traceback
 
 from django.conf import settings
 from django.db import models  # ✅ FIX: for models.Q / Case / When if used anywhere
-from django.db.models import Count, F
+from django.db.models import Count, F, Avg  # ✅ NEW: Avg (safe if rating field exists)
 
 from django.contrib.auth import get_user_model
 
@@ -127,6 +127,115 @@ def build_creator_meta_maps(request, video_list):
         )
 
     return followers_count_map, following_set
+
+
+# ============================================================
+# ✅ NEW: PRODUCT FEED (Tap product → watch reviews for this product)
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def feed_product(request):
+    """
+    GET /api/reviews/feed/product/?product_id=<id>
+    Returns only reviews tied to this product identifier (review_product_id).
+    """
+    pid = str(request.query_params.get("product_id") or "").strip()
+    if not pid:
+        return Response({"detail": "product_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    videos = VideoReview.objects.filter(
+        is_public=True,
+        is_deleted=False,
+        is_approved=True,
+        review_product_id=pid,
+    ).select_related("user").order_by("-created_at")
+
+    paginator = StandardResultsSetPagination()
+    page = paginator.paginate_queryset(videos, request)
+
+    followers_map, following_set = build_creator_meta_maps(request, page)
+
+    serializer = VideoReviewSerializer(
+        page,
+        many=True,
+        context={
+            "request": request,
+            "followers_count_map": followers_map,
+            "following_set": following_set,
+        },
+    )
+    return paginator.get_paginated_response(serializer.data)
+
+
+# ============================================================
+# ✅ NEW: BULK REVIEW STATS (Store cards social proof)
+# ============================================================
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def review_stats_by_product(request):
+    """
+    GET /api/reviews/stats/by-product/?ids=12,15,19
+    Returns:
+      {
+        "12": {"reviews_count": 5, "creator_count": 3, "avg_rating": 0},
+        "15": {"reviews_count": 0, "creator_count": 0, "avg_rating": 0}
+      }
+
+    Note: avg_rating is included ONLY if your VideoReview model has a numeric field
+    like `rating` or `stars`. Otherwise it will safely stay 0.
+    """
+    ids_raw = (request.query_params.get("ids") or "").strip()
+    if not ids_raw:
+        return Response({}, status=status.HTTP_200_OK)
+
+    ids = [s.strip() for s in ids_raw.split(",") if s.strip()]
+    if not ids:
+        return Response({}, status=status.HTTP_200_OK)
+
+    base = VideoReview.objects.filter(
+        is_public=True,
+        is_deleted=False,
+        is_approved=True,
+        review_product_id__in=ids,
+    )
+
+    # Always compute counts
+    agg = (
+        base.values("review_product_id")
+        .annotate(
+            reviews_count=Count("id"),
+            creator_count=Count("user_id", distinct=True),
+        )
+    )
+
+    # Optional avg rating (only if field exists)
+    # We try common names without crashing.
+    rating_field = None
+    for candidate in ("rating", "stars", "rating_value"):
+        try:
+            VideoReview._meta.get_field(candidate)
+            rating_field = candidate
+            break
+        except Exception:
+            continue
+
+    if rating_field:
+        agg = agg.annotate(avg_rating=Avg(rating_field))
+    else:
+        # keep shape consistent
+        pass
+
+    out = {pid: {"reviews_count": 0, "creator_count": 0, "avg_rating": 0} for pid in ids}
+
+    for row in agg:
+        pid = str(row.get("review_product_id") or "")
+        out[pid] = {
+            "reviews_count": int(row.get("reviews_count") or 0),
+            "creator_count": int(row.get("creator_count") or 0),
+            "avg_rating": float(row.get("avg_rating") or 0) if rating_field else 0,
+        }
+
+    return Response(out, status=status.HTTP_200_OK)
 
 
 # ============================================================
