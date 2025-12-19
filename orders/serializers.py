@@ -35,7 +35,6 @@ def build_full_url(request, image):
 
     # 3️⃣ Cloudinary public ID (no slashes, short)
     if len(url) < 150 and "/" not in url:
-        # Example: "kdf82kd92" → expand to cloudinary URL
         return f"https://res.cloudinary.com/dmpymbirt/image/upload/{url}.jpg"
 
     # 4️⃣ Local relative path
@@ -50,63 +49,50 @@ def build_full_url(request, image):
 # ============================================================
 CATEGORY_SPEC_SCHEMA = {
     "Phones": {
-        "required": {
-            "brand": "str",
-            "model": "str",
-            "storage_gb": "num",
-            "ram_gb": "num",
-        },
+        "required": {"brand": "str", "model": "str", "storage_gb": "num", "ram_gb": "num"},
         "optional": {
             "battery_mah": "num",
             "screen_in": "num",
-            "camera": "str",           # e.g. "50+12+10"
+            "camera": "str",
             "os": "str",
-            "network": "str",          # e.g. "4G", "5G"
-            "condition": "str",        # e.g. "New", "Used"
+            "network": "str",
+            "condition": "str",
             "warranty_months": "num",
         },
     },
     "Accessories": {
-        "required": {
-            "type": "str",             # e.g. "Charger", "Earbuds", "Case"
-        },
+        "required": {"type": "str"},
         "optional": {
             "brand": "str",
-            "compatibility": "str",    # e.g. "USB-C", "iPhone", "Android"
+            "compatibility": "str",
             "power_w": "num",
             "material": "str",
             "condition": "str",
         },
     },
     "Electronics": {
-        "required": {
-            "brand": "str",
-        },
+        "required": {"brand": "str"},
         "optional": {
             "model": "str",
             "power_w": "num",
-            "voltage": "str",          # e.g. "220V"
-            "capacity": "str",         # e.g. "1.5L"
+            "voltage": "str",
+            "capacity": "str",
             "condition": "str",
             "warranty_months": "num",
         },
     },
     "Gadgets": {
-        "required": {
-            "brand": "str",
-        },
+        "required": {"brand": "str"},
         "optional": {
             "model": "str",
             "battery_mah": "num",
-            "connectivity": "str",     # e.g. "Bluetooth", "Wi-Fi"
+            "connectivity": "str",
             "condition": "str",
             "warranty_months": "num",
         },
     },
     "Fashion": {
-        "required": {
-            "size": "str",             # e.g. "S", "M", "L", "XL", "42"
-        },
+        "required": {"size": "str"},
         "optional": {
             "brand": "str",
             "color": "str",
@@ -115,45 +101,39 @@ CATEGORY_SPEC_SCHEMA = {
             "condition": "str",
         },
     },
-    "Other": {
-        "required": {},
-        "optional": {},
-    },
+    "Other": {"required": {}, "optional": {}},
 }
 
 
 def _coerce_spec_value(expected_type: str, value):
-    """
-    expected_type: "str" | "num"
-    Coerces values safely so API stays consistent.
-    """
     if value is None:
         return None
-
     if expected_type == "str":
         return str(value).strip()
-
     if expected_type == "num":
         try:
             return float(value)
         except Exception:
             return None
-
     return value
 
 
 # ============================================================
 # 🛍️ PRODUCT SERIALIZER
-# (Used everywhere: Store, PartnerListing, etc.)
+# ✅ NOW RETURNS GLOBAL video review counts for EVERYONE
 # ============================================================
 class ProductSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.username", read_only=True)
+
     oldPrice = serializers.DecimalField(
         source="old_price", max_digits=10, decimal_places=2, read_only=True
     )
 
-    # ✅ NEW: Category-based specs (JSON)
+    # ✅ Category specs JSON
     specs = serializers.JSONField(required=False)
+
+    # ✅ Global review summary (fed via context["review_stats"])
+    review_summary = serializers.SerializerMethodField()
 
     # 5 images guaranteed
     image = serializers.SerializerMethodField()
@@ -171,9 +151,10 @@ class ProductSerializer(serializers.ModelSerializer):
             "price",
             "oldPrice",
             "category",
-            "specs",         # ✅ NEW
-            "rating",
-            "stock",
+            "specs",
+            "rating",          # keep your existing field
+            "stock",           # keep your existing field
+            "review_summary",  # ✅ NEW (global for everyone)
             "image",
             "image2",
             "image3",
@@ -184,17 +165,6 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        """
-        Enforce category-specific spec fields.
-
-        - Phones must include: brand, model, storage_gb, ram_gb
-        - Fashion must include: size
-        - Electronics/Gadgets require: brand
-        - Accessories require: type
-        - Other can be empty {}
-
-        Also coerces numeric strings to numbers where applicable.
-        """
         category = attrs.get("category") or (self.instance.category if self.instance else None)
         category = category or "Other"
 
@@ -204,7 +174,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
         incoming_specs = attrs.get("specs", None)
 
-        # If not provided on update, use existing
         if incoming_specs is None and self.instance:
             incoming_specs = getattr(self.instance, "specs", {}) or {}
 
@@ -216,28 +185,21 @@ class ProductSerializer(serializers.ModelSerializer):
 
         cleaned = {}
 
-        # Required fields
         for key, t in required.items():
             if key not in incoming_specs or incoming_specs.get(key) in ["", None]:
-                raise serializers.ValidationError(
-                    {"specs": f"'{key}' is required for category '{category}'."}
-                )
+                raise serializers.ValidationError({"specs": f"'{key}' is required for category '{category}'."})
             v = _coerce_spec_value(t, incoming_specs.get(key))
             if v in ["", None]:
                 raise serializers.ValidationError({"specs": f"'{key}' must be a valid {t}."})
             cleaned[key] = v
 
-        # Optional fields
         for key, t in optional.items():
             if key in incoming_specs and incoming_specs.get(key) not in ["", None]:
                 v = _coerce_spec_value(t, incoming_specs.get(key))
                 if v in ["", None]:
-                    raise serializers.ValidationError(
-                        {"specs": f"'{key}' must be a valid {t} if provided."}
-                    )
+                    raise serializers.ValidationError({"specs": f"'{key}' must be a valid {t} if provided."})
                 cleaned[key] = v
 
-        # Allow extra keys ONLY for Other (so it stays flexible)
         if category == "Other":
             for k, v in incoming_specs.items():
                 if k not in cleaned and v not in [None, ""]:
@@ -245,6 +207,31 @@ class ProductSerializer(serializers.ModelSerializer):
 
         attrs["specs"] = cleaned
         return attrs
+
+    def _get_review_stats_map(self):
+        """
+        Expected format in context:
+          review_stats = {
+             "12": {"count": 5},
+             "18": {"count": 2},
+          }
+        """
+        m = self.context.get("review_stats")
+        return m if isinstance(m, dict) else {}
+
+    def get_review_summary(self, obj):
+        stats = self._get_review_stats_map()
+        key = str(obj.id)
+        row = stats.get(key) or {}
+        count = int(row.get("count") or 0)
+
+        # ⚠️ Your VideoReview model currently has NO rating field,
+        # so we can only guarantee global counts today.
+        # (Later if you add rating, you can extend this to avg.)
+        return {
+            "count": count,
+            "source": "video_reviews",
+        }
 
     def get_image(self, obj):
         return build_full_url(self.context.get("request"), obj.image)
@@ -264,16 +251,15 @@ class ProductSerializer(serializers.ModelSerializer):
 
 # ============================================================
 # 🤝 PARTNER LISTING SERIALIZER
-# (Used when someone opens referral link)
 # ============================================================
 class PartnerListingSerializer(serializers.ModelSerializer):
     partner = serializers.CharField(source="partner.username", read_only=True)
 
-    # Product fields forwarded
     name = serializers.CharField(source="product.name", read_only=True)
     description = serializers.CharField(source="product.description", read_only=True)
     category = serializers.CharField(source="product.category", read_only=True)
     rating = serializers.FloatField(source="product.rating", read_only=True)
+
     oldPrice = serializers.DecimalField(
         source="product.old_price", max_digits=10, decimal_places=2, read_only=True
     )
@@ -281,11 +267,9 @@ class PartnerListingSerializer(serializers.ModelSerializer):
         source="product.price", max_digits=10, decimal_places=2, read_only=True
     )
 
-    # Product included as nested serializer
     product = serializers.SerializerMethodField()
     is_resale = serializers.SerializerMethodField()
 
-    # Partner sale images
     image = serializers.SerializerMethodField()
     image2 = serializers.SerializerMethodField()
     image3 = serializers.SerializerMethodField()
@@ -326,6 +310,7 @@ class PartnerListingSerializer(serializers.ModelSerializer):
     def get_product(self, obj):
         if not obj.product:
             return None
+        # ✅ ProductSerializer will also include review_summary using same context["review_stats"]
         return ProductSerializer(obj.product, context=self.context).data
 
     def get_image(self, obj):
@@ -346,7 +331,6 @@ class PartnerListingSerializer(serializers.ModelSerializer):
 
 # ============================================================
 # 📦 ORDER ITEM SERIALIZER
-# (Used in My Orders, dashboard, etc.)
 # ============================================================
 class OrderItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
@@ -373,11 +357,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
     def get_image(self, obj):
         request = self.context.get("request")
 
-        # 1️⃣ Snapshot FIRST (most accurate)
         if obj.product_image_snapshot:
             return build_full_url(request, obj.product_image_snapshot)
 
-        # 2️⃣ Fallback to product image
         if obj.product and obj.product.image:
             return build_full_url(request, obj.product.image)
 

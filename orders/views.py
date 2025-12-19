@@ -10,6 +10,9 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from django.apps import apps
+from django.db.models import Count
+
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -41,6 +44,67 @@ def log_transaction(user, transaction_type, amount, description=""):
 
 
 # ============================================================
+# ✅ GLOBAL VIDEO REVIEW STATS (NO USER DEPENDENCY)
+# Builds: {"12": {"count": 5}, ...} keyed by Product.id as string
+# ============================================================
+def build_review_stats_for_products(products_qs):
+    """
+    Uses reviews.VideoReview:
+      - product FK if present
+      - OR review_product_id (string) fallback
+
+    Only counts: public + approved + not deleted
+    """
+    try:
+        VideoReview = apps.get_model("reviews", "VideoReview")
+    except Exception:
+        return {}
+
+    product_ids = list(products_qs.values_list("id", flat=True))
+    if not product_ids:
+        return {}
+
+    # 1) FK-linked reviews
+    fk_rows = (
+        VideoReview.objects.filter(
+            product_id__in=product_ids,
+            is_public=True,
+            is_approved=True,
+            is_deleted=False,
+        )
+        .values("product_id")
+        .annotate(count=Count("id"))
+    )
+
+    stats = {}
+    for r in fk_rows:
+        pid = str(r["product_id"])
+        stats[pid] = {"count": int(r["count"] or 0)}
+
+    # 2) review_product_id fallback (string) – only when product FK might be null
+    str_ids = [str(x) for x in product_ids]
+    rid_rows = (
+        VideoReview.objects.filter(
+            product__isnull=True,
+            review_product_id__in=str_ids,
+            is_public=True,
+            is_approved=True,
+            is_deleted=False,
+        )
+        .values("review_product_id")
+        .annotate(count=Count("id"))
+    )
+
+    for r in rid_rows:
+        pid = str(r["review_product_id"])
+        prev = stats.get(pid, {"count": 0})
+        prev["count"] = int(prev.get("count", 0)) + int(r["count"] or 0)
+        stats[pid] = prev
+
+    return stats
+
+
+# ============================================================
 # 🏬 STORE PRODUCTS
 # ============================================================
 @api_view(["GET"])
@@ -48,7 +112,15 @@ def log_transaction(user, transaction_type, amount, description=""):
 def list_products(request):
     try:
         products = Product.objects.all().order_by("-created_at")
-        serializer = ProductSerializer(products, many=True, context={"request": request})
+
+        # ✅ build global review counts once
+        review_stats = build_review_stats_for_products(products)
+
+        serializer = ProductSerializer(
+            products,
+            many=True,
+            context={"request": request, "review_stats": review_stats},
+        )
         return Response(serializer.data, status=200)
     except Exception as e:
         print("❌ list_products:", e)
@@ -63,14 +135,28 @@ def list_products(request):
 def get_product(request, pk):
     try:
         product = Product.objects.get(pk=pk)
-        serializer = ProductSerializer(product, context={"request": request})
+
+        review_stats = build_review_stats_for_products(Product.objects.filter(id=product.id))
+
+        serializer = ProductSerializer(
+            product,
+            context={"request": request, "review_stats": review_stats},
+        )
         return Response(serializer.data)
     except Product.DoesNotExist:
         pass
 
     try:
         listing = PartnerListing.objects.get(pk=pk)
-        serializer = PartnerListingSerializer(listing, context={"request": request})
+
+        # include review stats for underlying product (if exists)
+        qs = Product.objects.filter(id=listing.product_id) if listing.product_id else Product.objects.none()
+        review_stats = build_review_stats_for_products(qs)
+
+        serializer = PartnerListingSerializer(
+            listing,
+            context={"request": request, "review_stats": review_stats},
+        )
         return Response(serializer.data)
     except PartnerListing.DoesNotExist:
         return Response({"error": "Product not found"}, status=404)
@@ -107,14 +193,12 @@ def create_order(request):
     usable_points = min(points_wallet.balance / Decimal("10"), total_amount)
     points_to_deduct = usable_points * Decimal("10")
 
-    # ---------------- WALLET PAYMENT ----------------
     if payment_method == "wallet":
         total_after_points = total_amount - usable_points
 
         if wallet.balance < total_after_points:
             return Response({"error": "Insufficient wallet balance"}, status=400)
 
-        # Redeem points
         if points_to_deduct > 0:
             try:
                 points_wallet.redeem_points(points_to_deduct)
@@ -132,7 +216,6 @@ def create_order(request):
             status="paid",
         )
 
-    # ---------------- CREDIT PAYMENT ----------------
     elif payment_method == "credit":
         down_payment = total_amount * Decimal("0.30")
         remaining = total_amount - down_payment
@@ -160,7 +243,6 @@ def create_order(request):
     else:
         return Response({"error": "Invalid payment method"}, status=400)
 
-    # ---------------- CREATE ORDER ITEMS ----------------
     for item in items:
         name = item.get("name", "Unnamed Product")
         price = Decimal(str(item.get("price", 0)))
@@ -168,12 +250,7 @@ def create_order(request):
         image = item.get("image", "")
         partner_id = item.get("partner_id")
 
-        # Flexible product id support
-        raw_pid = (
-            item.get("product_id")
-            or item.get("productId")
-            or item.get("product")
-        )
+        raw_pid = item.get("product_id") or item.get("productId") or item.get("product")
 
         product_obj = None
         if raw_pid:
@@ -191,7 +268,6 @@ def create_order(request):
             product_image_snapshot=image,
         )
 
-        # Assign partner if resale item
         if partner_id:
             try:
                 partner_user = User.objects.get(id=partner_id)
@@ -277,7 +353,16 @@ def get_partner_listings(request):
         user = request.user
         listings = PartnerListing.objects.filter(partner=user).order_by("-created_at")
 
-        serializer = PartnerListingSerializer(listings, many=True, context={"request": request})
+        # include review stats for products inside these listings
+        prod_ids = list(listings.values_list("product_id", flat=True))
+        qs = Product.objects.filter(id__in=[p for p in prod_ids if p]) if prod_ids else Product.objects.none()
+        review_stats = build_review_stats_for_products(qs)
+
+        serializer = PartnerListingSerializer(
+            listings,
+            many=True,
+            context={"request": request, "review_stats": review_stats},
+        )
         return Response(serializer.data, status=200)
 
     except Exception as e:
@@ -328,7 +413,13 @@ def create_partner_listing(request):
         listing.referral_url = f"https://kudiway.com/r/{listing.referral_code}"
         listing.save()
 
-        serializer = PartnerListingSerializer(listing, context={"request": request})
+        # include review stats for this one product
+        review_stats = build_review_stats_for_products(Product.objects.filter(id=product.id))
+
+        serializer = PartnerListingSerializer(
+            listing,
+            context={"request": request, "review_stats": review_stats},
+        )
 
         return Response({"message": "Listing created", "listing": serializer.data}, status=201)
 
@@ -396,7 +487,13 @@ def get_referral_product(request, ref_code):
         listing.clicks += 1
         listing.save(update_fields=["clicks"])
 
-        serializer = PartnerListingSerializer(listing, context={"request": request})
+        qs = Product.objects.filter(id=listing.product_id) if listing.product_id else Product.objects.none()
+        review_stats = build_review_stats_for_products(qs)
+
+        serializer = PartnerListingSerializer(
+            listing,
+            context={"request": request, "review_stats": review_stats},
+        )
         return Response(serializer.data)
 
     except PartnerListing.DoesNotExist:
