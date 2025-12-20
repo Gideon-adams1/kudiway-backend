@@ -153,7 +153,9 @@ class ProductSerializer(serializers.ModelSerializer):
             "category",
             "specs",
             "rating",          # keep your existing field
-            "stock",           # keep your existing field
+            "stock",
+            "review_count",
+            "avg_rating",                      # keep your existing field
             "review_summary",  # ✅ NEW (global for everyone)
             "image",
             "image2",
@@ -220,18 +222,9 @@ class ProductSerializer(serializers.ModelSerializer):
         return m if isinstance(m, dict) else {}
 
     def get_review_summary(self, obj):
-        stats = self._get_review_stats_map()
-        key = str(obj.id)
-        row = stats.get(key) or {}
-        count = int(row.get("count") or 0)
-
-        # ⚠️ Your VideoReview model currently has NO rating field,
-        # so we can only guarantee global counts today.
-        # (Later if you add rating, you can extend this to avg.)
-        return {
-            "count": count,
-            "source": "video_reviews",
-        }
+        count = int(getattr(obj, "review_count", 0) or 0)
+        avg = getattr(obj, "avg_rating", None)
+        return {"count": count, "avg": avg, "source": "video_reviews"}
 
     def get_image(self, obj):
         return build_full_url(self.context.get("request"), obj.image)
