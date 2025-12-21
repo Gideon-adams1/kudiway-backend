@@ -368,6 +368,8 @@ def partner_status(request):
     return Response({
         "is_verified_partner": profile.is_verified_partner,
         "application_status": profile.partner_application_status,
+        "debug_marker": "PARTNER_STATUS_V2",
+
 
         "kyc_status": kyc_status,
 
