@@ -27,6 +27,7 @@ from .models import KudiPoints, Profile  # Profile is referenced explicitly
 from kudiwallet.models import Notification
 from orders.models import Order
 from django.apps import apps
+from reviews.models import UserFollow, VideoReview
 
 
 
@@ -314,6 +315,75 @@ def get_kudi_points(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def partner_status(request):
+    user = request.user
+    profile = user.profile
+
+    # -------------------------------------------------
+    # KYC
+    # -------------------------------------------------
+    kyc = getattr(user, "kyc_profile", None)
+    kyc_status = kyc.status if kyc else "Missing"
+
+    # -------------------------------------------------
+    # Purchases
+    # -------------------------------------------------
+    total_spent = (
+        Order.objects.filter(user=user, status=Order.Status.PAID)
+        .aggregate(Sum("total_amount"))["total_amount__sum"] or 0
+    )
+    meets_spend_requirement = total_spent >= 500
+
+    # -------------------------------------------------
+    # ✅ Kudiway followers (IN-APP)
+    # -------------------------------------------------
+    kudiway_followers = UserFollow.objects.filter(following=user).count()
+    meets_kudiway_follow_requirement = kudiway_followers >= 30
+
+    # -------------------------------------------------
+    # ✅ Social followers (EXTERNAL)
+    # -------------------------------------------------
+    social_followers = int(profile.social_followers or 0)
+    meets_social_requirement = social_followers >= 300
+
+    # -------------------------------------------------
+    # ✅ Kudiway video review
+    # -------------------------------------------------
+    has_video_review = VideoReview.objects.filter(
+        user=user,
+        is_deleted=False,
+    ).exists()
+
+    # -------------------------------------------------
+    # Can apply
+    # -------------------------------------------------
+    can_apply = (
+        kyc_status == "Approved"
+        and meets_spend_requirement
+        and meets_kudiway_follow_requirement
+        and meets_social_requirement
+        and has_video_review
+        and profile.partner_application_status not in ["pending", "approved"]
+    )
+
+    return Response({
+        "is_verified_partner": profile.is_verified_partner,
+        "application_status": profile.partner_application_status,
+
+        "kyc_status": kyc_status,
+
+        "total_spent": float(total_spent),
+        "meets_spend_requirement": meets_spend_requirement,
+
+        "kudiway_followers": kudiway_followers,
+        "meets_kudiway_follow_requirement": meets_kudiway_follow_requirement,
+
+        "social_followers": social_followers,
+        "meets_social_requirement": meets_social_requirement,
+
+        "has_video_review": has_video_review,
+        "can_apply": can_apply,
+    })
+
     user = request.user
     profile = user.profile
 
