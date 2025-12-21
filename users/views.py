@@ -26,6 +26,8 @@ from rest_framework.response import Response
 from .models import KudiPoints, Profile  # Profile is referenced explicitly
 from kudiwallet.models import Notification
 from orders.models import Order
+from django.apps import apps
+
 
 
 # ============================================================
@@ -313,37 +315,87 @@ def get_kudi_points(request):
 @permission_classes([IsAuthenticated])
 def partner_status(request):
     user = request.user
-    profile = _get_profile(user)
+    profile = user.profile
 
-    req = _partner_requirements(profile, user)
+    # KYC
+    kyc = getattr(user, "kyc_profile", None)
+    kyc_status = kyc.status if kyc else "Missing"
 
-    # can_apply: must meet all requirements AND not already pending/approved
+    # Purchases
+    total_spent = (
+        Order.objects.filter(user=user, status=Order.Status.PAID)
+        .aggregate(Sum("total_amount"))["total_amount__sum"] or 0
+    )
+    meets_spend_requirement = float(total_spent) >= 500
+
+    # ------------------------------------------------------------
+    # ✅ Kudiway Followers (IN-APP) — from reviews.UserFollow
+    # ------------------------------------------------------------
+    kudiway_followers = 0
+    try:
+        UserFollow = apps.get_model("reviews", "UserFollow")
+        kudiway_followers = UserFollow.objects.filter(following=user).count()
+    except Exception:
+        # If reviews app/model name differs, it won't crash
+        kudiway_followers = 0
+
+    meets_kudiway_followers_requirement = kudiway_followers >= 30
+
+    # ------------------------------------------------------------
+    # ✅ Social Media Followers (EXTERNAL) — from profile
+    # ------------------------------------------------------------
+    social_followers = int(profile.social_followers or 0)
+    meets_social_requirement = social_followers >= 300
+
+    # ------------------------------------------------------------
+    # ✅ Kudiway Video Review Requirement
+    # Option A (recommended): check real VideoReview exists
+    # Option B: fallback to profile.video_review_links
+    # ------------------------------------------------------------
+    has_video_review = False
+    video_review_links = profile.video_review_links or []
+
+    try:
+        VideoReview = apps.get_model("reviews", "VideoReview")
+        has_video_review = VideoReview.objects.filter(user=user, is_deleted=False).exists()
+    except Exception:
+        # fallback: links
+        has_video_review = len(video_review_links) > 0
+
     can_apply = (
-        req["kyc_status"] == "Approved"
-        and req["meets_spend_requirement"]
-        and req["meets_social_requirement"]
-        and req["meets_kudiway_followers_requirement"]
-        and req["has_video_review"]
+        kyc_status == "Approved"
+        and meets_spend_requirement
+        and meets_kudiway_followers_requirement
+        and meets_social_requirement
+        and has_video_review
         and profile.partner_application_status not in ["pending", "approved"]
     )
 
-    return Response(
-        {
-            "is_verified_partner": bool(profile.is_verified_partner),
-            "application_status": profile.partner_application_status,
-            "kyc_status": req["kyc_status"],
-            "total_spent": req["total_spent"],
-            "meets_spend_requirement": req["meets_spend_requirement"],
-            "social_followers": req["social_followers"],
-            "meets_social_requirement": req["meets_social_requirement"],
-            "kudiway_followers": req["kudiway_followers"],
-            "meets_kudiway_followers_requirement": req["meets_kudiway_followers_requirement"],
-            "video_review_links": req["video_review_links"],
-            "has_video_review": req["has_video_review"],
-            "can_apply": can_apply,
-        }
-    )
+    return Response({
+        "is_verified_partner": profile.is_verified_partner,
+        "application_status": profile.partner_application_status,
 
+        "kyc_status": kyc_status,
+
+        "total_spent": float(total_spent),
+        "meets_spend_requirement": meets_spend_requirement,
+
+        # ✅ In-app Kudiway followers
+        "kudiway_followers": int(kudiway_followers),
+        "meets_kudiway_followers_requirement": meets_kudiway_followers_requirement,
+
+        # ✅ External social followers + platform proof
+        "social_media_platform": profile.social_media_platform,
+        "social_media_handle": profile.social_media_handle,
+        "social_followers": social_followers,
+        "meets_social_requirement": meets_social_requirement,
+
+        # ✅ Video reviews
+        "video_review_links": video_review_links,
+        "has_video_review": has_video_review,
+
+        "can_apply": can_apply,
+    })
 
 # ============================================================
 # 📩 APPLY TO BECOME PARTNER
@@ -352,46 +404,69 @@ def partner_status(request):
 @permission_classes([IsAuthenticated])
 def apply_partner(request):
     user = request.user
-    profile = _get_profile(user)
+    profile = user.profile
 
     if profile.is_verified_partner:
-        return Response(
-            {"error": "Already a verified partner."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Already a verified partner."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     if profile.partner_application_status == "pending":
-        return Response(
-            {"error": "Application already pending."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": "Application already pending."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    req = _partner_requirements(profile, user)
+    # KYC
+    kyc = getattr(user, "kyc_profile", None)
+    kyc_status = kyc.status if kyc else "Missing"
 
-    eligible = (
-        req["kyc_status"] == "Approved"
-        and req["meets_spend_requirement"]
-        and req["meets_social_requirement"]
-        and req["meets_kudiway_followers_requirement"]
-        and req["has_video_review"]
+    # Purchases
+    total_spent = (
+        Order.objects.filter(user=user, status=Order.Status.PAID)
+        .aggregate(Sum("total_amount"))["total_amount__sum"] or 0
     )
+    meets_spend_requirement = float(total_spent) >= 500
 
-    if not eligible:
+    # ✅ Kudiway followers
+    kudiway_followers = 0
+    try:
+        UserFollow = apps.get_model("reviews", "UserFollow")
+        kudiway_followers = UserFollow.objects.filter(following=user).count()
+    except Exception:
+        kudiway_followers = 0
+
+    meets_kudiway_followers_requirement = kudiway_followers >= 30
+
+    # ✅ Social followers (external)
+    social_followers = int(profile.social_followers or 0)
+    meets_social_requirement = social_followers >= 300
+
+    # ✅ Video review exists
+    has_video_review = False
+    video_review_links = profile.video_review_links or []
+    try:
+        VideoReview = apps.get_model("reviews", "VideoReview")
+        has_video_review = VideoReview.objects.filter(user=user, is_deleted=False).exists()
+    except Exception:
+        has_video_review = len(video_review_links) > 0
+
+    if not (
+        kyc_status == "Approved"
+        and meets_spend_requirement
+        and meets_kudiway_followers_requirement
+        and meets_social_requirement
+        and has_video_review
+    ):
         return Response(
             {"error": "You do not meet all requirements yet."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     profile.partner_application_status = "pending"
-    profile.save(update_fields=["partner_application_status"])
+    profile.save()
 
-    return Response(
-        {
-            "message": "Your application has been submitted and is under review.",
-            "application_status": "pending",
-        }
-    )
-
+    return Response({
+        "message": "Your application has been submitted and is under review.",
+        "application_status": "pending",
+    })
 
 # ============================================================
 # 🔐 ADMIN — LIST PENDING PARTNERS
